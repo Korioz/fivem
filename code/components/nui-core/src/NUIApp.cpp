@@ -8,6 +8,7 @@
 #include "StdInc.h"
 #include "NUIApp.h"
 #include "CefOverlay.h"
+#include <CoreConsole.h>
 #include "memdbgon.h"
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -137,10 +138,35 @@ void NUIApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		"rdr3"
 #elif defined(GTA_FIVE)
 		"gta5"
+#elif defined (GTA_NY)
+		"ny"
 #else
 		"unknown"
 #endif
 	), V8_PROPERTY_ATTRIBUTE_READONLY);
+
+
+	// FxDK API
+	{
+		std::vector<std::string> fxdkHandlers{
+			"resizeGame",
+			"sendMousePos",
+			"sendMouseWheel",
+			"setKeyState",
+			"setMouseButtonState",
+			"openDevTools",
+			"setFPSLimit",
+			"setInputChar",
+			"fxdkSendApiMessage",
+			"fxdkOpenSelectFolderDialog",
+			"fxdkOpenSelectFileDialog",
+		};
+
+		for (auto const& handler : fxdkHandlers)
+		{
+			window->SetValue(handler, CefV8Value::CreateFunction(handler, this), V8_PROPERTY_ATTRIBUTE_READONLY);
+		}
+	}
 }
 
 void NUIApp::OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
@@ -157,17 +183,27 @@ void NUIApp::OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame
 
 void NUIApp::OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line)
 {
+	static ConVar<bool> nuiUseInProcessGpu("nui_useInProcessGpu", ConVar_Archive, false);
+
+	if (nuiUseInProcessGpu.GetValue())
+	{
+		command_line->AppendSwitch("in-process-gpu");
+	}
+
 	command_line->AppendSwitch("enable-experimental-web-platform-features");
-	//command_line->AppendSwitch("use-fake-ui-for-media-stream");
-	//command_line->AppendSwitch("enable-speech-input");
 	command_line->AppendSwitch("ignore-gpu-blacklist");
 	command_line->AppendSwitch("ignore-gpu-blocklist"); // future proofing for when Google disables the above
 	command_line->AppendSwitch("disable-direct-composition");
 	command_line->AppendSwitch("disable-gpu-driver-bug-workarounds");
 	command_line->AppendSwitchWithValue("default-encoding", "utf-8");
-	//command_line->AppendSwitch("disable-gpu-vsync");
 	command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
-	command_line->AppendSwitch("force-gpu-rasterization");
+
+#if !GTA_NY
+	command_line->AppendSwitch("enable-gpu-rasterization");
+#else
+	command_line->AppendSwitch("disable-gpu-vsync");
+#endif
+
 	command_line->AppendSwitch("disable-gpu-process-crash-limit");
 
 	// important switch to prevent users from mentioning 'why are there 50 chromes again'
@@ -180,9 +216,16 @@ void NUIApp::OnBeforeCommandLineProcessing(const CefString& process_type, CefRef
 	// CORB is not handled by CEF CefAddCrossOriginWhitelistEntry, disable CORS entirely
 	command_line->AppendSwitch("disable-web-security");
 
+	// disable these to verify impact on GPU crashes
+	command_line->AppendSwitch("disable-accelerated-video-decode");
+	command_line->AppendSwitch("disable-accelerated-video-encode");
+	command_line->AppendSwitch("disable-accelerated-mjpeg-decode");
+
 	// register the CitizenFX game view plugin
 	// in M73+ it ends up entirely breaking UI rendering
+#if !GTA_NY
 	command_line->AppendSwitchWithValue("register-pepper-plugins", fmt::sprintf("%s;application/x-cfx-game-view", ToNarrow(MakeRelativeCitPath(L"bin\\d3d_rendering.dll"))));
+#endif
 }
 
 bool NUIApp::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message)

@@ -1,13 +1,23 @@
+local dynamic = ...
+
 return {
 	include = function()
 		includedirs { "../vendor/xz/src/liblzma/api/" }
 	end,
 
 	run = function()
-		targetname "xz-crt"
+		if dynamic then
+			targetname "xz"
+		else
+			targetname "xz-crt"
+		end
+
 		language "C"
 		kind "StaticLib"
-		staticruntime 'On'
+		
+		if not dynamic then
+			staticruntime 'On'
+		end
 
 		defines { 'HAVE_STDINT_H=1', 'HAVE_CONFIG_H=1' }
 

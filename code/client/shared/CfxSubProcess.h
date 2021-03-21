@@ -51,6 +51,8 @@ inline const wchar_t* MakeCfxSubProcess(const std::wstring& processType, const s
 	productName = L"FXS_";
 #elif defined(IS_RDR3)
 	productName = L"RedM_";
+#elif defined(GTA_NY)
+	productName = L"LibertyM_";
 #else
 #error No subprocess name!
 #endif
@@ -66,6 +68,7 @@ inline const wchar_t* MakeCfxSubProcess(const std::wstring& processType, const s
 		productName += L"fxdk_";
 	}
 	
+#ifdef GTA_FIVE
 	if (wcsstr(GetCommandLine(), L"b2189") != nullptr)
 	{
 		productName += L"b2189_";
@@ -80,6 +83,12 @@ inline const wchar_t* MakeCfxSubProcess(const std::wstring& processType, const s
 	{
 		productName += L"b372_";
 	}
+#elif IS_RDR3
+	if (wcsstr(GetCommandLine(), L"b1355") != nullptr)
+	{
+		productName += L"b1355_";
+	}
+#endif
 #endif
 
 	outPath += productName + processType;

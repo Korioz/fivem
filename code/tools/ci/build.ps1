@@ -23,7 +23,7 @@ param (
     $Identity = "C:\guava_deploy.ppk"
 )
 
-$CefName = "cef_binary_83.0.0-shared-textures.2175+g5430a8e+chromium-83.0.4103.0_windows64_20210124_minimal"
+$CefName = "cef_binary_83.0.0-shared-textures.2175+g5430a8e+chromium-83.0.4103.0_windows64_20210210_minimal"
 
 # from http://stackoverflow.com/questions/2124753/how-i-can-use-powershell-with-the-visual-studio-command-prompt
 function Invoke-BatchFile
@@ -250,7 +250,7 @@ if (!$DontBuild)
 	    
 	    $CIBranch = "master-old"
 	    
-	    if (!$IsServer -and !$IsRDR -and $UseNewCI) {
+	    if ($UseNewCI) {
 			$CIBranch = "master"
 	    }
 
@@ -373,6 +373,7 @@ if (!$DontBuild -and $IsServer) {
     Copy-Item -Force "$WorkRootDir\tools\ci\7z.exe" 7z.exe
 
     .\7z.exe a -mx=9 $WorkDir\out\server.zip $WorkDir\out\server\*
+    .\7z.exe a -mx=7 $WorkDir\out\server.7z $WorkDir\out\server\*
 
     $uri = 'https://sentry.fivem.net/api/0/organizations/citizenfx/releases/'
     $json = @{
@@ -491,7 +492,7 @@ if (!$DontBuild -and !$IsServer) {
     "$GameVersion" | Out-File -Encoding ascii $CacheDir\fivereborn\citizen\version.txt
     "${env:CI_PIPELINE_ID}" | Out-File -Encoding ascii $CacheDir\fivereborn\citizen\release.txt
 
-    if ($IsRDR -or !$UseNewCI) {
+    if (!$UseNewCI) {
         if (Test-Path $CacheDir\fivereborn\adhesive.dll) {
             Remove-Item -Force $CacheDir\fivereborn\adhesive.dll
         }
@@ -582,6 +583,12 @@ if (!$DontUpload) {
     Copy-Item -Force CitizenFX.exe.xz $WorkDir\upload\$Branch\bootstrap
     Copy-Item -Force version.txt $WorkDir\upload\$Branch\bootstrap
     Copy-Item -Force caches.xml $WorkDir\upload\$Branch\content
+
+    if (!$IsLauncher -and !$IsRDR) {
+        Copy-Item -Force $WorkDir\caches\caches_sdk.xml $WorkDir\upload\$Branch\content
+        Copy-Item -Recurse -Force $WorkDir\caches\diff\fxdk-five\ $WorkDir\upload\$Branch\content\
+    }
+
     Copy-Item -Recurse -Force diff\fivereborn\ $WorkDir\upload\$Branch\content\
 
     $BaseRoot = (Split-Path -Leaf $WorkDir)

@@ -1651,6 +1651,35 @@ struct CEntityOrientationDataNode : GenericSerializeDataNode<CEntityOrientationD
 	}
 };
 
+struct CObjectOrientationDataNode : GenericSerializeDataNode<CObjectOrientationDataNode>
+{
+	CObjectOrientationNodeData data;
+
+	template<typename Serializer>
+	bool Serialize(Serializer& s)
+	{
+		s.Serialize(data.highRes);
+
+		if (data.highRes)
+		{
+			const float divisor = glm::pi<float>() * 4;
+
+			s.SerializeSigned(20, divisor, data.rotX);
+			s.SerializeSigned(20, divisor, data.rotY);
+			s.SerializeSigned(20, divisor, data.rotZ);
+		}
+		else
+		{
+			s.Serialize(2, data.quat.largest);
+			s.Serialize(11, data.quat.integer_a);
+			s.Serialize(11, data.quat.integer_b);
+			s.Serialize(11, data.quat.integer_c);
+		}
+
+		return true;
+	}
+};
+
 struct CPhysicalVelocityDataNode
 {
 	CPhysicalVelocityNodeData data;
@@ -1752,7 +1781,7 @@ struct CObjectCreationDataNode
 	// #TODO: universal serializer
 	bool Unparse(SyncUnparseState& state)
 	{
-		state.buffer.Write<int>(5, 1);
+		state.buffer.Write<int>(5, 4); // ENTITY_OWNEDBY_SCRIPT
 		state.buffer.Write<uint32_t>(32, m_model);
 		state.buffer.WriteBit(m_dynamic);
 		state.buffer.WriteBit(false);
@@ -1770,6 +1799,26 @@ struct CObjectCreationDataNode
 		/*
 			Probably a subsystem ID
 			If it's 0 or 2, it's a dummy object
+
+			Enum from X360:
+			0: ENTITY_OWNEDBY_RANDOM
+			1: ENTITY_OWNEDBY_TEMP
+			2: ENTITY_OWNEDBY_FRAGMENT_CACHE
+			3: ENTITY_OWNEDBY_GAME
+			4: ENTITY_OWNEDBY_SCRIPT
+			5: ENTITY_OWNEDBY_AUDIO
+			6: ENTITY_OWNEDBY_CUTSCENE
+			7: ENTITY_OWNEDBY_DEBUG
+			8: ENTITY_OWNEDBY_OTHER
+			9: ENTITY_OWNEDBY_PROCEDURAL
+			10: ENTITY_OWNEDBY_POPULATION
+			11: ENTITY_OWNEDBY_STATICBOUNDS
+			12: ENTITY_OWNEDBY_PHYSICS
+			13: ENTITY_OWNEDBY_IPL
+			14: ENTITY_OWNEDBY_VFX
+			15: ENTITY_OWNEDBY_NAVMESHEXPORTER
+			16: ENTITY_OWNEDBY_INTERIOR
+			17: ENTITY_OWNEDBY_COMPENTITY
 		*/
 		int createdBy = state.buffer.Read<int>(5);
 		if (createdBy != 0 && createdBy != 2)
@@ -1920,8 +1969,8 @@ struct CPedHealthDataNode
 		if (!isFine)
 		{
 			int pedHealth = state.buffer.Read<int>(13);
-			auto unk4 = state.buffer.ReadBit();
-			auto unk5 = state.buffer.ReadBit();
+			auto killedWithHeadshot = state.buffer.ReadBit();
+			auto killedWithMelee = state.buffer.ReadBit();
 
 			data.health = pedHealth;
 		}
@@ -1947,36 +1996,42 @@ struct CPedHealthDataNode
 			bool hasUnk1 = state.buffer.ReadBit();
 			bool hasUnk2 = state.buffer.ReadBit();
 
-			if (hasUnk1)
+			if (hasUnk2)
 			{
 				state.buffer.Read<int>(13);
 			}
 
-			if (!hasUnk2)
+			if (!hasUnk1)
 			{
 				state.buffer.Read<int>(13);
 			}
 		}
 
 
-		auto unk8 = state.buffer.ReadBit();
+		auto hasSource = state.buffer.ReadBit();
 
-		if (unk8) // unk9 != 0
+		if (hasSource)
 		{
-			// object ID
-			auto unk9 = state.buffer.Read<short>(13);
+			int damageEntity = state.buffer.Read<int>(13);
+			data.sourceOfDamage = damageEntity;
+		}
+		else 
+		{
+			data.sourceOfDamage = 0;
 		}
 
 		int causeOfDeath = state.buffer.Read<int>(32);
 		data.causeOfDeath = causeOfDeath;
 
-		int injuredStatus = state.buffer.Read<int>(2); // Change below 150 HP, injured data?
+		auto hurtStarted = state.buffer.ReadBit();
 
-		auto unk13 = state.buffer.ReadBit();
+		int hurtEndTime = state.buffer.Read<int>(2);
 
-		if (unk13)
+		auto hasWeaponDamageComponent = state.buffer.ReadBit();
+
+		if (hasWeaponDamageComponent)
 		{
-			int unk14 = state.buffer.Read<int>(8);
+			int weaponDamageComponent = state.buffer.Read<int>(8);
 		}
 
 		return true;
@@ -2062,10 +2117,60 @@ struct CPlaneGameStateDataNode { bool Parse(SyncParseState& state) { return true
 struct CPlaneControlDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CSubmarineGameStateDataNode { bool Parse(SyncParseState& state) { return true; } };
 struct CSubmarineControlDataNode { bool Parse(SyncParseState& state) { return true; } };
-struct CTrainGameStateDataNode { bool Parse(SyncParseState& state) { return true; } };
+
+struct CTrainGameStateDataNode
+{
+	CTrainGameStateDataNodeData data;
+
+	bool Parse(SyncParseState& state)
+	{
+		int engineCarriage = state.buffer.Read<int>(13);
+		data.engineCarriage = engineCarriage;
+
+		// What carriage is attached to this carriage
+		int connectedCarriage = state.buffer.Read<int>(13);
+
+		// What this carriage is attached to
+		int connectedToCarriage = state.buffer.Read<int>(13);
+
+		// Offset from the engine carriage?
+		float engineOffset = state.buffer.ReadSignedFloat(32, 1000.0f);
+
+		int trainConfigIndex = state.buffer.Read<int>(8);
+
+		int carriageIndex = state.buffer.Read<int>(8);
+		data.carriageIndex = carriageIndex;
+
+		// 0 = Main Line, 3 = Metro line
+		int trackId = state.buffer.Read<int>(8);
+
+		float cruiseSpeed = state.buffer.ReadSignedFloat(8, 30.0f);
+
+		// 0 = Moving, 1 = Slowing down, 2 = Doors opening, 3 = Stopped, 4 = Doors closing, 5 = Before depart
+		int trainState = state.buffer.Read<int>(3);
+
+		bool isStartCarriage = state.buffer.ReadBit();
+
+		bool isEndCarriage = state.buffer.ReadBit();
+
+		bool unk12 = state.buffer.ReadBit();
+
+		bool direction = state.buffer.ReadBit();
+
+		bool unk14 = state.buffer.ReadBit();
+
+		bool renderDerailed = state.buffer.ReadBit();
+
+		bool forceDoorsOpen = state.buffer.ReadBit();
+
+		return true;
+	}
+};
+
 struct CPlayerCreationDataNode { bool Parse(SyncParseState& state) { return true; } };
 
-struct CPlayerGameStateDataNode {
+struct CPlayerGameStateDataNode
+{
 	CPlayerGameStateNodeData data;
 
 	bool Parse(SyncParseState& state)
@@ -2118,11 +2223,6 @@ struct CPlayerGameStateDataNode {
 		auto steamProof = state.buffer.ReadBit();
 		auto unk21 = state.buffer.ReadBit();
 		auto unk22 = state.buffer.ReadBit();
-
-		if (Is2060())
-		{
-			state.buffer.ReadBit();
-		}
 
 		if (unk12)
 		{
@@ -2216,9 +2316,18 @@ struct CPlayerGameStateDataNode {
 		auto unk67 = state.buffer.ReadBit();
 		auto unk68 = state.buffer.ReadBit();
 		auto unk69 = state.buffer.ReadBit();
-		auto unk70 = state.buffer.ReadBit();
 
-		// #TODO2060: maybe extra read near here? list is weird
+		if (Is2060())
+		{
+			state.buffer.ReadBit();
+		}
+
+		if (Is2189())
+		{
+			state.buffer.ReadBit();
+		}
+
+		auto unk70 = state.buffer.ReadBit();
 
 		if (unk70)
 		{
@@ -2536,17 +2645,20 @@ struct CPlayerWantedAndLOSDataNode
 		auto wantedLevel = state.buffer.Read<int>(3);
 		data.wantedLevel = wantedLevel;
 		auto unk0 = state.buffer.Read<int>(3);
-		auto unk1 = state.buffer.Read<int>(3);
-		auto unk2 = state.buffer.ReadBit();
+		auto fakeWantedLevel = state.buffer.Read<int>(3);
+		data.fakeWantedLevel = fakeWantedLevel;
+		auto pendingWantedLevel = state.buffer.ReadBit();
 		auto unk3 = state.buffer.ReadBit();
 		auto isWanted = state.buffer.ReadBit();
 
 		if (isWanted) {
-			// These coordinates need more exploration.
-			// But I think these coordinates rely to where crime was started or last position seen of player by cops
-			auto posX = state.buffer.ReadSignedFloat(19, 27648.0f);
-			auto posY = state.buffer.ReadSignedFloat(19, 27648.0f);
-			auto posZ = state.buffer.ReadFloat(19, 4416.0f) - 1700.0f;
+			auto wantedPositionX = state.buffer.ReadSignedFloat(19, 27648.0f);
+			auto wantedPositionY = state.buffer.ReadSignedFloat(19, 27648.0f);
+			auto wantedPositionZ = state.buffer.ReadFloat(19, 4416.0f) - 1700.0f;
+			data.wantedPositionX = wantedPositionX;
+			data.wantedPositionY = wantedPositionY;
+			data.wantedPositionZ = wantedPositionZ;
+
 			auto posX2 = state.buffer.ReadSignedFloat(19, 27648.0f);
 			auto posY2 = state.buffer.ReadSignedFloat(19, 27648.0f);
 			auto posZ2 = state.buffer.ReadFloat(19, 4416.0f) - 1700.0f;
@@ -2559,9 +2671,15 @@ struct CPlayerWantedAndLOSDataNode
 			else
 				data.timeInPursuit = 0;
 		}
-		else if (data.timeInPursuit != -1) {
-			data.timeInPrevPursuit = data.timeInPursuit;
-			data.timeInPursuit = -1;
+		else {
+			data.wantedPositionX = 0.0f;
+			data.wantedPositionY = 0.0f;
+			data.wantedPositionZ = 0.0f;
+
+			if (data.timeInPursuit != -1) {
+				data.timeInPrevPursuit = data.timeInPursuit;
+				data.timeInPursuit = -1;
+			}
 		}
 
 		auto unk4 = state.buffer.ReadBit();
@@ -2733,6 +2851,13 @@ struct SyncTree : public SyncTreeBase
 		return (hasVdn) ? &vehNode->data : nullptr;
 	}
 
+	virtual CTrainGameStateDataNodeData* GetTrainState()
+	{
+		auto [hasNode, node] = GetData<CTrainGameStateDataNode>();
+
+		return (hasNode) ? &node->data : nullptr;
+	}
+
 	virtual CPlayerGameStateNodeData* GetPlayerGameState() override
 	{
 		auto [hasNode, node] = GetData<CPlayerGameStateDataNode>();
@@ -2771,6 +2896,13 @@ struct SyncTree : public SyncTreeBase
 	virtual CEntityOrientationNodeData* GetEntityOrientation() override
 	{
 		auto [hasNode, node] = GetData<CEntityOrientationDataNode>();
+
+		return (hasNode) ? &node->data : nullptr;
+	}
+
+	virtual CObjectOrientationNodeData* GetObjectOrientation() override
+	{
+		auto [hasNode, node] = GetData<CObjectOrientationDataNode>();
 
 		return (hasNode) ? &node->data : nullptr;
 	}
@@ -2875,7 +3007,20 @@ struct SyncTree : public SyncTreeBase
 
 		return false;
 	}
-		
+
+	virtual bool IsEntityVisible(bool* visible)
+	{
+		auto [hasNode, node] = GetData<CPhysicalGameStateDataNode>();
+
+		if (hasNode)
+		{
+			*visible = node->isVisible;
+			return true;
+		}
+
+		return false;
+	}
+
 	virtual void Parse(SyncParseState& state) final override
 	{
 		std::unique_lock<std::mutex> lock(mutex);
@@ -3200,7 +3345,7 @@ using CObjectSyncTree = SyncTree<
 			NodeIds<87, 87, 0>, 
 			NodeWrapper<NodeIds<87, 87, 0>, CSectorDataNode>, 
 			NodeWrapper<NodeIds<87, 87, 0>, CObjectSectorPosNode>, 
-			NodeWrapper<NodeIds<87, 87, 0>, CEntityOrientationDataNode>, 
+			NodeWrapper<NodeIds<87, 87, 0>, CObjectOrientationDataNode>, 
 			NodeWrapper<NodeIds<87, 87, 0>, CPhysicalVelocityDataNode>, 
 			NodeWrapper<NodeIds<87, 87, 0>, CPhysicalAngVelocityDataNode>
 		>, 

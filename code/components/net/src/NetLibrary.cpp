@@ -65,7 +65,7 @@ static std::string CollectTimeoutInfo()
 	};
 
 	return fmt::sprintf(
-		"DEBUG INFO FOR TIMEOUTS:\nrun frame: %s\nreceive data: %s\nsend data: %s",
+		"TIMEOUT INFO:\nRun game frame: %s\nReceive data from server: %s\nSend data to server: %s\n\nGuide to interpreting above data: each number is the amount of milliseconds between now and a 'tick' of this type.\nIf any are above ~5000, the specified row is likely to be an issue.",
 		gatherInfo(g_runFrameTicks),
 		gatherInfo(g_receiveDataTicks),
 		gatherInfo(g_sendDataTicks)
@@ -336,20 +336,14 @@ void NetLibrary::ProcessOOB(const NetAddress& from, const char* oob, size_t leng
 
 				StripColors(hostname, cleaned, 8192);
 
-#ifdef GTA_FIVE
-				SetWindowText(FindWindow(
-#ifdef GTA_FIVE
-					L"grcWindow"
-#elif defined(IS_RDR3)
-					L"sgaWindow"
-#else
-					L"UNKNOWN_WINDOW"
-#endif
-				, nullptr), va(
+#if defined(GTA_FIVE) || defined(GTA_NY)
+				SetWindowText(FindWindow(xbr::GetGameWndClass(), nullptr), va(
 #ifdef GTA_FIVE
 					L"FiveM"
 #elif defined(IS_RDR3)
 					L"RedM"
+#elif defined(GTA_NY)
+					L"LibertyM"
 #endif
 					L" - %s", ToWide(cleaned)));
 #endif
@@ -424,7 +418,7 @@ void NetLibrary::ProcessOOB(const NetAddress& from, const char* oob, size_t leng
 				const char* errorStr = &oob[6];
 				auto errText = std::string(errorStr, length - 6);
 
-				if (strstr(errorStr, "Timed out") != nullptr)
+				if (strstr(errorStr, "Timed out") != nullptr || strstr(errorStr, "timed out") != nullptr)
 				{
 					errText += fmt::sprintf("\n%s", CollectTimeoutInfo());
 				}
@@ -845,11 +839,14 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 {
 	std::string ruRef = rootUrl;
 
+	// increment the GUID so servers won't race to remove us
+	m_tempGuid++;
+
 	auto urlRef = co_await ResolveUrl(ruRef);
 
 	if (!urlRef)
 	{
-		OnConnectionError(va("Couldn't resolve URL %s.", ruRef));
+		OnConnectionError(fmt::sprintf("Couldn't resolve URL %s.", ruRef).c_str());
 		co_return;
 	}
 
@@ -915,18 +912,14 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 	postMap["method"] = "initConnect";
 	postMap["name"] = GetPlayerName();
 	postMap["protocol"] = va("%d", NETWORK_PROTOCOL);
-
-	std::string gameBuild;
-
-	if (Instance<ICoreGameInit>::Get()->GetData("gameBuild", &gameBuild))
-	{
-		postMap["gameBuild"] = gameBuild;
-	}
+	postMap["gameBuild"] = fmt::sprintf("%d", xbr::GetGameBuild());
 
 #if defined(IS_RDR3)
 	postMap["gameName"] = "rdr3";
 #elif defined(GTA_FIVE)
 	postMap["gameName"] = "gta5";
+#elif defined(GTA_NY)
+	postMap["gameName"] = "gta4";
 #endif
 
 	static std::function<void()> performRequest;
@@ -951,13 +944,13 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 			// TODO: add UI output
 			m_connectionState = CS_IDLE;
 
-			OnConnectionError(va("Failed handshake to server %s%s%s.", url, connData.length() > 0 ? " - " : "", connData));
+			OnConnectionError(fmt::sprintf("Failed handshake to server %s%s%s.", url, connData.length() > 0 ? " - " : "", connData).c_str());
 
 			return;
 		}
 		else if (!isLegacyDeferral && !Instance<ICoreGameInit>::Get()->OneSyncEnabled)
 		{
-			OnConnectionError(va("Failed handshake to server %s - it closed the connection while deferring.", url));
+			OnConnectionError(fmt::sprintf("Failed handshake to server %s - it closed the connection while deferring.", url).c_str());
 		}
 	};
 
@@ -1430,7 +1423,7 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 														{
 															if (!fact.empty())
 															{
-																OnConnectionError(va("Could not check server feature policy. %s", fact));
+																OnConnectionError(fmt::sprintf("Could not check server feature policy. %s", fact).c_str());
 
 																m_connectionState = CS_IDLE;
 
@@ -1453,7 +1446,7 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 									}
 									catch (std::exception& e)
 									{
-										OnConnectionError(va("Info get failed for %s\n", e.what()));
+										OnConnectionError(fmt::sprintf("Info get failed for %s\n", e.what()).c_str());
 
 										m_connectionState = CS_IDLE;
 									}
@@ -1483,7 +1476,7 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 								{
 									if (!success)
 									{
-										OnConnectionError(va("This server has been blocked from the FiveM platform. Stated reason: %sIf you manage this server and you feel this is not justified, please contact your Technical Account Manager.", dStr));
+										OnConnectionError(fmt::sprintf("This server has been blocked from the FiveM platform. Stated reason: %sIf you manage this server and you feel this is not justified, please contact your Technical Account Manager.", dStr).c_str());
 
 										m_connectionState = CS_IDLE;
 
@@ -1683,18 +1676,23 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 				try
 				{
 					json info = json::parse(data, data + size);
-#ifdef GTA_FIVE
+#if defined(GTA_FIVE) || defined(IS_RDR3)
 					if (info.is_object() && info["vars"].is_object())
 					{
 						auto val = info["vars"].value("sv_enforceGameBuild", "");
+						int buildRef = 0;
 
 						if (!val.empty())
 						{
-							int buildRef = std::stoi(val);
+							buildRef = std::stoi(val);
 
 							if (buildRef != 0 && buildRef != xbr::GetGameBuild())
 							{
+#if defined(GTA_FIVE)
 								if (buildRef != 1604 && buildRef != 2060 && buildRef != 2189)
+#else
+								if (buildRef != 1311 && buildRef != 1355)
+#endif
 								{
 									OnConnectionError(va("Server specified an invalid game build enforcement (%d).", buildRef));
 									m_connectionState = CS_IDLE;
@@ -1702,8 +1700,19 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 								}
 
 								OnRequestBuildSwitch(buildRef);
+								m_connectionState = CS_IDLE;
+								return;
 							}
 						}
+
+#if defined(GTA_FIVE)
+						if (xbr::GetGameBuild() != 1604 && buildRef == 0)
+						{
+							OnRequestBuildSwitch(1604);
+							m_connectionState = CS_IDLE;
+							return;
+						}
+#endif
 
 						auto ival = info["vars"].value("sv_licenseKeyToken", "");
 

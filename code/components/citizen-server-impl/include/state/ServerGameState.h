@@ -133,12 +133,17 @@ struct CPlayerCameraNodeData
 
 struct CPlayerWantedAndLOSNodeData
 {
+	int fakeWantedLevel;
 	int wantedLevel;
 	int isWanted;
 	int isEvading;
 
 	int timeInPursuit;
 	int timeInPrevPursuit;
+
+	float wantedPositionX;
+	float wantedPositionY;
+	float wantedPositionZ;
 
 	inline CPlayerWantedAndLOSNodeData()
 		: timeInPursuit(-1), timeInPrevPursuit(-1)
@@ -223,6 +228,7 @@ struct CVehicleGameStateNodeData
 {
 	uint16_t occupants[32];
 	eastl::bitset<32> playerOccupants;
+	uint16_t lastOccupant[32];
 	int radioStation;
 	bool isEngineOn;
 	bool isEngineStarting;
@@ -253,6 +259,13 @@ struct CEntityOrientationNodeData
 	compressed_quaternion<11> quat;
 };
 
+struct CObjectOrientationNodeData
+{
+	bool highRes;
+	compressed_quaternion<11> quat;
+	float rotX, rotY, rotZ;
+};
+
 struct CPhysicalVelocityNodeData
 {
 	float velX;
@@ -273,6 +286,7 @@ struct CPedHealthNodeData
 	int health;
 	int armour;
 	uint32_t causeOfDeath;
+	int sourceOfDamage;
 };
 
 struct CPedOrientationNodeData
@@ -284,6 +298,13 @@ struct CPedOrientationNodeData
 struct CDynamicEntityGameStateNodeData
 {
 	std::map<int, int> decors;
+};
+
+struct CTrainGameStateDataNodeData
+{
+	int engineCarriage;
+
+	int carriageIndex;
 };
 
 struct CPlayerGameStateNodeData
@@ -358,6 +379,8 @@ public:
 
 	virtual CVehicleAppearanceNodeData* GetVehicleAppearance() = 0;
 
+	virtual CTrainGameStateDataNodeData* GetTrainState() = 0;
+
 	virtual CPlayerGameStateNodeData* GetPlayerGameState() = 0;
 
 	virtual CPedHealthNodeData* GetPedHealth() = 0;
@@ -367,6 +390,8 @@ public:
 	virtual CPedOrientationNodeData* GetPedOrientation() = 0;
 
 	virtual CEntityOrientationNodeData* GetEntityOrientation() = 0;
+
+	virtual CObjectOrientationNodeData* GetObjectOrientation() = 0;
 
 	virtual CVehicleAngVelocityNodeData* GetAngVelocity() = 0;
 
@@ -379,6 +404,8 @@ public:
 	virtual bool GetModelHash(uint32_t* modelHash) = 0;
 
 	virtual bool GetScriptHash(uint32_t* scriptHash) = 0;
+
+	virtual bool IsEntityVisible(bool* visible) = 0;
 };
 
 enum class NetObjEntityType
@@ -452,10 +479,22 @@ struct SyncEntityState
 
 	virtual ~SyncEntityState();
 
-	inline float GetDistanceCullingRadius()
+	inline float GetDistanceCullingRadius(float playerCullingRadius)
 	{
-		// #TODO1S: figure out a good value for this
-		return overrideCullingRadius != 0.0f ? overrideCullingRadius : (424.0f * 424.0f);
+		//Use priority ordering
+		if (overrideCullingRadius != 0.0f) 
+		{
+			return overrideCullingRadius;
+		}
+		else if (playerCullingRadius != 0.0f) 
+		{
+			return playerCullingRadius;
+		}
+		else
+		{
+			// #TODO1S: figure out a good value for this
+			return (424.0f * 424.0f);
+		}
 	}
 
 	inline uint32_t GetScriptHash()
@@ -787,6 +826,13 @@ struct GameStateClientData : public sync::ClientSyncDataBase
 
 	uint32_t routingBucket = 0;
 
+	float playerCullingRadius = 0.0f;
+	
+	inline float GetPlayerCullingRadius()
+	{
+		return playerCullingRadius;
+	}
+
 	GameStateClientData()
 		: syncing(false)
 	{
@@ -874,7 +920,7 @@ private:
 
 	void RemoveClone(const fx::ClientSharedPtr& client, uint16_t objectId, uint16_t uniqifier = 0);
 
-	void FinalizeClone(const fx::ClientSharedPtr& client, uint16_t objectId, uint16_t uniqifier = 0, std::string_view finalizeReason = "");
+	void FinalizeClone(const fx::ClientSharedPtr& client, const fx::sync::SyncEntityPtr& entity, uint16_t objectId, uint16_t uniqifier = 0, std::string_view finalizeReason = "");
 
 	void ParseClonePacket(const fx::ClientSharedPtr& client, net::Buffer& buffer);
 

@@ -5,7 +5,9 @@
  * regarding licensing.
  */
 
+#ifndef COMPILING_GLUE
 #include "../shared/StdInc.h"
+#endif
 
 int DL_RequestURL(const char* url, char* buffer, size_t bufSize);
 const char* DL_RequestURLError();
@@ -35,7 +37,7 @@ bool UI_IsCanceled();
 HWND UI_GetWindowHandle();
 
 // updater functions
-bool Updater_RunUpdate(int numCaches, ...);
+bool Updater_RunUpdate(std::initializer_list<std::string> wantedCaches);
 const char* GetUpdateChannel();
 
 #include <array>
@@ -73,11 +75,17 @@ bool CheckFileOutdatedWithUI(const wchar_t* fileName, const std::vector<std::arr
 #define LAUNCHER_PERSONALITY_GAME
 #elif defined(LAUNCHER_PERSONALITY_GAME_372)
 #define LAUNCHER_PERSONALITY_GAME
-#else
-#define LAUNCHER_PERSONALITY_GAME_1604
+#elif defined(LAUNCHER_PERSONALITY_GAME_1604)
+#define LAUNCHER_PERSONALITY_GAME
 #endif
 #elif defined(IS_RDR3)
-#ifdef LAUNCHER_PERSONALITY_MAIN
+#ifdef LAUNCHER_PERSONALITY_GAME_1311
+#define LAUNCHER_PERSONALITY_GAME
+#elif defined(LAUNCHER_PERSONALITY_GAME_1355)
+#define LAUNCHER_PERSONALITY_GAME
+#endif
+#elif defined(GTA_NY)
+#ifdef LAUNCHER_PERSONALITY_GAME_43
 #define LAUNCHER_PERSONALITY_GAME
 #endif
 #endif

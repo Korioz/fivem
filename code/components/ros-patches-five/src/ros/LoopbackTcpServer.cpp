@@ -537,7 +537,7 @@ void LoopbackTcpServerManager::TriggerSocketEvent(SOCKET socket, long event, siz
 			{
 				auto& readEvent = readIt->second;
 
-				Recv(socket, reinterpret_cast<char*>(std::get<void*>(readEvent)), std::get<size_t>(readEvent), 0, reinterpret_cast<int*>(std::get<size_t*>(readEvent)));
+				Recv(socket, reinterpret_cast<char*>(std::get<void*>(readEvent)), std::get<size_t>(readEvent), 0, reinterpret_cast<int*>(std::get<ULONG_PTR*>(readEvent)));
 
 				m_threadpoolReadRequests.erase(readIt);
 			}
@@ -598,7 +598,7 @@ void LoopbackTcpServerManager::SetThreadpoolIo(SOCKET s, DWORD mask, LPOVERLAPPE
 
 void LoopbackTcpServerManager::SetThreadpoolRecv(SOCKET s, LPOVERLAPPED overlapped, void* outBuffer, size_t outSize)
 {
-	m_threadpoolReadRequests[s] = std::tuple<void*, size_t, size_t*>{ outBuffer, outSize, &overlapped->InternalHigh };
+	m_threadpoolReadRequests[s] = std::tuple<void*, size_t, ULONG_PTR*>{ outBuffer, outSize, &overlapped->InternalHigh };
 	m_threadpoolIoCallbacks[{s, FD_READ}] = overlapped;
 }
 
@@ -1162,7 +1162,7 @@ static BOOL __stdcall EP_CallbackMayRunLong(PTP_CALLBACK_INSTANCE cb)
 
 #include <EnvironmentBlockHelpers.h>
 
-static BOOL(*g_oldCreateProcessW)(const wchar_t* applicationName, wchar_t* commandLine, SECURITY_ATTRIBUTES* processAttributes, SECURITY_ATTRIBUTES* threadAttributes,
+static BOOL(__stdcall *g_oldCreateProcessW)(const wchar_t* applicationName, wchar_t* commandLine, SECURITY_ATTRIBUTES* processAttributes, SECURITY_ATTRIBUTES* threadAttributes,
 								  BOOL inheritHandles, DWORD creationFlags, void* environment, const wchar_t* currentDirectory, STARTUPINFOW* startupInfo,
 								  PROCESS_INFORMATION* information);
 
@@ -1277,6 +1277,14 @@ static BOOL __stdcall EP_CreateProcessW(const wchar_t* applicationName, wchar_t*
 		if (isService ||
 			boost::filesystem::path(applicationName).filename() == "RockstarService.exe")
 		{
+			auto mutex = OpenMutexW(SYNCHRONIZE, FALSE, va(L"Cfx_ROSServiceMutex_%s", ToWide(launch::GetLaunchModeKey())));
+
+			if (mutex)
+			{
+				WaitForSingleObject(mutex, INFINITE);
+				CloseHandle(mutex);
+			}
+
 			BOOL retval;
 
 			// parse the existing environment block
@@ -1298,7 +1306,7 @@ static BOOL __stdcall EP_CreateProcessW(const wchar_t* applicationName, wchar_t*
 
 			BuildEnvironmentBlock(environmentMap, newEnvironment);
 
-			auto fxApplicationName = MakeCfxSubProcess(L"ROSService", L"game");
+			auto fxApplicationName = MakeCfxSubProcess(L"ROSService", fmt::sprintf(L"game_%d", xbr::GetGameBuild()));
 
 			// set the command line
 			const wchar_t* newCommandLine = va(L"\"%s\" ros:service", fxApplicationName, commandLine);
@@ -1318,16 +1326,9 @@ static BOOL __stdcall EP_CreateProcessW(const wchar_t* applicationName, wchar_t*
 			}
 
 			information->hThread = NULL;
-			information->hProcess = CreateEventW(NULL, TRUE, FALSE, L"Cfx_ROSServiceEvent");
-
-			// unset the environment variable
-			//SetEnvironmentVariable(L"CitizenFX_ToolMode", L"0");
+			information->hProcess = CreateEventW(NULL, TRUE, FALSE, va(L"Cfx_ROSServiceEvent_%s", ToWide(launch::GetLaunchModeKey())));
 
 			return retval;
-
-			//static auto an = MakeRelativeCitPath(L"cache\\game\\launcher\\RockstarService.exe");
-
-			//applicationName = an.c_str();
 		}
 	}
 
@@ -1440,9 +1441,9 @@ static void SetLauncherWaitCB(HANDLE hEvent, HANDLE hProcess, BOOL doBreak)
 						};
 
 						backOffFile(L"cache\\game\\ros_documents");
-						backOffFile(L"cache\\game\\ros_launcher_appdata2");
-						backOffFile(L"cache\\game\\ros_launcher_data2");
-						backOffFile(L"cache\\game\\ros_launcher_documents");
+						backOffFile(L"cache\\game\\ros_launcher_appdata3");
+						backOffFile(L"cache\\game\\ros_launcher_data3");
+						backOffFile(L"cache\\game\\ros_launcher_documents2");
 						backOffFile(L"cache\\game\\ros_launcher_game2");
 						backOffFile(L"cache\\game\\ros_profiles");
 
@@ -1517,14 +1518,29 @@ void RunLauncher(const wchar_t* toolName, bool instantWait)
 	//SetEnvironmentVariable(L"CitizenFX_ToolMode", L"1");
 
 	// create a new application name
-	auto fxApplicationName = MakeCfxSubProcess(L"ROSLauncher", L"game");
+	auto fxApplicationName = MakeCfxSubProcess(L"ROSLauncher", fmt::sprintf(L"game_%d", xbr::GetGameBuild()));
 
 	// set the command line
 	//const wchar_t* newCommandLine = va(L"\"%s\" %s --parent_pid=%d \"%s\"", fxApplicationName, toolName, GetCurrentProcessId(), MakeRelativeGamePath(L"GTAVLauncher.exe").c_str());
 	const wchar_t* newCommandLine = va(L"\"%s\" %s --parent_pid=%d \"%s\" -noRecogniser", fxApplicationName, toolName, GetCurrentProcessId(), L"C:\\program files\\rockstar games\\launcher\\launcher.exe");
 
 	// create a waiting event
-	HANDLE hEvent = CreateEvent(nullptr, TRUE, FALSE, va(L"CitizenFX_GTA5_ClearedForLaunch%s", wcsstr(toolName, L"steam") ? L"_Steam" : (IsCL2() ? L"CL2" : L"")));
+	auto eventName = L"";
+
+	if (wcsstr(toolName, L"steam"))
+	{
+		eventName = L"_Steam";
+	}
+	else if (wcsstr(toolName, L"epic"))
+	{
+		eventName = L"_Epic";
+	}
+	else if (IsCL2())
+	{
+		eventName = L"CL2";
+	}
+
+	HANDLE hEvent = CreateEvent(nullptr, TRUE, FALSE, va(L"CitizenFX_GTA5_ClearedForLaunch%s", eventName));
 
 	// and go create the new fake process
 	PROCESS_INFORMATION pi;
@@ -1669,10 +1685,11 @@ static HANDLE __stdcall CreateFileAStub(
 		lpFileName = va("\\\\.\\pipe\\MTLService_Pipe_CFX%s", IsCL2() ? "_CL2" : "");
 	}
 
+	
 	return g_oldCreateFileA(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
 }
 
-HANDLE CreateNamedPipeAHookL(_In_ LPCSTR lpName, _In_ DWORD dwOpenMode, _In_ DWORD dwPipeMode, _In_ DWORD nMaxInstances, _In_ DWORD nOutBufferSize, _In_ DWORD nInBufferSize, _In_ DWORD nDefaultTimeOut, _In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes)
+HANDLE _stdcall CreateNamedPipeAHookL(_In_ LPCSTR lpName, _In_ DWORD dwOpenMode, _In_ DWORD dwPipeMode, _In_ DWORD nMaxInstances, _In_ DWORD nOutBufferSize, _In_ DWORD nInBufferSize, _In_ DWORD nDefaultTimeOut, _In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes)
 {
 	if (strcmp(lpName, PIPE_NAME_NARROW) == 0)
 	{
@@ -1682,9 +1699,9 @@ HANDLE CreateNamedPipeAHookL(_In_ LPCSTR lpName, _In_ DWORD dwOpenMode, _In_ DWO
 	return CreateNamedPipeA(lpName, dwOpenMode, dwPipeMode, nMaxInstances, nOutBufferSize, nInBufferSize, nDefaultTimeOut, lpSecurityAttributes);
 }
 
-static HANDLE(*g_oldOpenFileMappingA)(_In_ DWORD dwDesiredAccess, _In_ BOOL bInheritHandle, _In_ LPCSTR lpName);
+static HANDLE(__stdcall *g_oldOpenFileMappingA)(_In_ DWORD dwDesiredAccess, _In_ BOOL bInheritHandle, _In_ LPCSTR lpName);
 
-static HANDLE OpenFileMappingAStub(_In_ DWORD dwDesiredAccess, _In_ BOOL bInheritHandle, _In_ LPCSTR lpName)
+static HANDLE __stdcall OpenFileMappingAStub(_In_ DWORD dwDesiredAccess, _In_ BOOL bInheritHandle, _In_ LPCSTR lpName)
 {
 	if (lpName && strstr(lpName, "MTLService_FileMapping"))
 	{
@@ -1694,7 +1711,7 @@ static HANDLE OpenFileMappingAStub(_In_ DWORD dwDesiredAccess, _In_ BOOL bInheri
 	return g_oldOpenFileMappingA(dwDesiredAccess, bInheritHandle, lpName);
 }
 
-static BOOL(*g_oldWriteFile)(_In_ HANDLE hFile, _In_reads_bytes_opt_(nNumberOfBytesToWrite) LPCVOID lpBuffer, _In_ DWORD nNumberOfBytesToWrite, _Out_opt_ LPDWORD lpNumberOfBytesWritten, _Inout_opt_ LPOVERLAPPED lpOverlapped);
+static BOOL(__stdcall *g_oldWriteFile)(_In_ HANDLE hFile, _In_reads_bytes_opt_(nNumberOfBytesToWrite) LPCVOID lpBuffer, _In_ DWORD nNumberOfBytesToWrite, _Out_opt_ LPDWORD lpNumberOfBytesWritten, _Inout_opt_ LPOVERLAPPED lpOverlapped);
 
 static BOOL __stdcall WriteFileStub(_In_ HANDLE hFile, _In_reads_bytes_opt_(nNumberOfBytesToWrite) LPCVOID lpBuffer, _In_ DWORD nNumberOfBytesToWrite, _Out_opt_ LPDWORD lpNumberOfBytesWritten, _Inout_opt_ LPOVERLAPPED lpOverlapped)
 {
@@ -1740,10 +1757,12 @@ void OnPreInitHook()
 	DO_HOOK(L"ws2_32.dll", "GetAddrInfoExW", EP_GetAddrInfoExW, g_oldGetAddrInfoExW);
 //	DO_HOOK(L"ws2_32.dll", "FreeAddrInfoW", EP_FreeAddrInfoW, g_oldFreeAddrInfoW); // these three are hook-checked
 
+#ifndef _M_IX86
 	if (CfxIsWine() || GetProcAddress(GetModuleHandle(L"kernel32.dll"), "EnterUmsSchedulingMode") == nullptr) // ARM64X 21277 doesn't expose EnterUmsSchedulingMode
 	{
 		DO_HOOK(L"ws2_32.dll", "getaddrinfo", EP_GetAddrInfo, g_oldGetAddrInfo); // enabled because wine, probably going to fail
 	}
+#endif
 
 //	DO_HOOK(L"ws2_32.dll", "freeaddrinfo", EP_FreeAddrInfo, g_oldFreeAddrInfo);
  	DO_HOOK(L"ws2_32.dll", "WSALookupServiceBeginW", EP_WSALookupServiceBeginW, g_oldLookupService);

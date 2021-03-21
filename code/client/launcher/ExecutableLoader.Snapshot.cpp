@@ -5,16 +5,28 @@
 
 #include <CrossBuildRuntime.h>
 
-#ifdef GTA_FIVE
-inline uintptr_t GetTriggerEP()
+#if defined(GTA_FIVE) || defined(IS_RDR3)
+inline static uintptr_t GetLauncherTriggerEP()
 {
 	if (getenv("CitizenFX_ToolMode"))
 	{
 		if (wcsstr(GetCommandLineW(), L"launcher.exe"))
 		{
-			// launcher.exe with sha256 hash 82935c8082c823e9ee275670ab218618b2101e3bc14091fe424539d8b44a68fe
-			return 0x1401BD2A4;
+			// launcher.exe with sha256 hash 0cc0862222ab2a8aa714658aff7d9f5897dfd8eceb0b279ffcda1df9de7e9774
+			return 0x1401F227C;
 		}
+	}
+
+	return 0;
+}
+#endif
+
+#ifdef GTA_FIVE
+inline uintptr_t GetTriggerEP()
+{
+	if (auto ep = GetLauncherTriggerEP(); ep != 0)
+	{
+		return ep;
 	}
 
 	if (Is372())
@@ -40,29 +52,26 @@ inline uintptr_t GetTriggerEP()
 // 2060 realities
 #define TRIGGER_EP (GetTriggerEP())
 #elif defined(IS_RDR3)
-// 1207.58
-//#define TRIGGER_EP 0x142D55C2C
+inline uintptr_t GetTriggerEP()
+{
+	if (auto ep = GetLauncherTriggerEP(); ep != 0)
+	{
+		return ep;
+	}
 
-// 1207.69
-//#define TRIGGER_EP 0x142D5B8FC
+	if (xbr::IsGameBuild<1355>())
+	{
+		return 0x142DE455C;
+	}
 
-// 1207.77
-//#define TRIGGER_EP 0x142D5F80C
+	// 1311.20
+	return 0x142E0F92C;
+}
 
-// 1207.80
-//#define TRIGGER_EP 0x142D601AC
-
-// 1311.12
-//#define TRIGGER_EP 0x142E0E63C
-
-// 1311.14
-//#define TRIGGER_EP 0x142E0F9BC
-
-// 1311.16
-#define TRIGGER_EP 0x142E0EF1C
-
-// 1311.20
-#define TRIGGER_EP 0x142E0F92C
+#define TRIGGER_EP (GetTriggerEP())
+#elif defined(GTA_NY)
+// .43
+#define TRIGGER_EP 0xDF8F2B
 #else
 #define TRIGGER_EP 0xDECEA5ED
 #endif
@@ -105,7 +114,13 @@ static void SetDebugBits(std::function<void(CONTEXT*)> cb, CONTEXT* curContext)
 template<typename T>
 static inline T* GetTargetRVA(uint32_t rva)
 {
-	return (T*)((uint8_t*)hook::get_adjusted(0x140000000 + rva));
+	return (T*)((uint8_t*)hook::get_adjusted(
+#ifdef _M_AMD64
+	0x140000000
+#else
+	0x400000
+#endif
+		+ rva));
 }
 
 static void UnapplyRelocations(bool a);
@@ -166,7 +181,7 @@ void DoCreateSnapshot()
 		context->Dr7 |= (1 << 6) | (0 << 28) | (0 << 30);
 
 		// set the address for bp 4
-		context->Dr3 = (DWORD64)hook::get_adjusted(TRIGGER_EP);
+		context->Dr3 = (DWORD_PTR)hook::get_adjusted(TRIGGER_EP);
 	}, nullptr);
 }
 
@@ -175,7 +190,15 @@ static std::wstring g_dumpFileName;
 
 static void UnapplyRelocations(bool a)
 {
-	IMAGE_DOS_HEADER* dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(hook::get_adjusted(0x140000000));
+	constexpr uintptr_t base =
+#ifdef _M_AMD64
+	0x140000000
+#else
+	0x400000
+#endif
+	;
+
+	IMAGE_DOS_HEADER* dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(hook::get_adjusted(base));
 
 	IMAGE_NT_HEADERS* ntHeader = GetTargetRVA<IMAGE_NT_HEADERS>(dosHeader->e_lfanew);
 
@@ -184,7 +207,7 @@ static void UnapplyRelocations(bool a)
 	IMAGE_BASE_RELOCATION* relocation = GetTargetRVA<IMAGE_BASE_RELOCATION>(relocationDirectory->VirtualAddress);
 	IMAGE_BASE_RELOCATION* endRelocation = reinterpret_cast<IMAGE_BASE_RELOCATION*>((char*)relocation + relocationDirectory->Size);
 
-	intptr_t relocOffset = static_cast<intptr_t>(hook::get_adjusted(0x140000000)) - 0x140000000;
+	intptr_t relocOffset = static_cast<intptr_t>(hook::get_adjusted(base)) - base;
 
 	if (relocOffset == 0)
 	{
@@ -344,7 +367,7 @@ void DoCreateDump(void* ep, const wchar_t* fileName)
 		context->Dr7 |= (1 << 6) | (0 << 28) | (0 << 30);
 
 		// set the address for bp 4
-		context->Dr3 = (DWORD64)ep;
+		context->Dr3 = (DWORD_PTR)ep;
 	}, nullptr);
 }
 
@@ -383,5 +406,11 @@ void ExecutableLoader::LoadSnapshot(IMAGE_NT_HEADERS* ntHeader)
 	VirtualProtect(ntHeader, 0x1000, PAGE_READWRITE, &oldProtect);
 
 	// no-adjust
-	ntHeader->OptionalHeader.AddressOfEntryPoint = TRIGGER_EP - 0x140000000;
+	ntHeader->OptionalHeader.AddressOfEntryPoint = TRIGGER_EP - 
+#ifdef _M_AMD64
+		0x140000000
+#else
+		0x400000
+#endif
+		;
 }

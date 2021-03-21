@@ -48,6 +48,8 @@ private:
 
 	ComPtr<IAudioCaptureClient> m_audioCaptureClient;
 
+	ComPtr<ISimpleAudioVolume> m_audioVolume;
+
 	WAVEFORMATEX m_waveFormat;
 
 	HANDLE m_startEvent;
@@ -72,7 +74,7 @@ private:
 
 	OpusEncoder* m_opus;
 
-	std::queue<std::string> m_opusPackets;
+	std::queue<std::tuple<std::string, int>> m_opusPackets;
 
 	uint64_t m_sequence;
 
@@ -109,7 +111,8 @@ private:
 
 	void HandleData(const uint8_t* buffer, size_t numBytes);
 
-	void EnqueueOpusPacket(std::string packet);
+	// numFrames is 10ms Opus frames
+	void EnqueueOpusPacket(std::string&& packet, int numFrames);
 
 	void SendQueuedOpusPackets();
 

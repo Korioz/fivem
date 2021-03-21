@@ -1063,9 +1063,17 @@ static HookFunction initFunction([]()
 
 	if (GetModuleHandle(L"AdvancedHookV.dll") == nullptr)
 	{
-		auto repairFunc = hook::get_pattern("F7 D0 48 8B CB 21 83 ? ? ? ? E8 ? ? ? ? 48 8B 03", 27);
-		hook::nop(repairFunc, 6);
-		hook::call_reg<2>(repairFunc, asmfunc.GetCode());
+		{
+			auto repairFunc = hook::get_pattern("F7 D0 48 8B CB 21 83 ? ? ? ? E8 ? ? ? ? 48 8B 03", 27);
+			hook::nop(repairFunc, 6);
+			hook::call_reg<2>(repairFunc, asmfunc.GetCode());
+		}
+
+		{
+			auto repairFunc = hook::get_pattern("FF 90 ? ? ? ? 8A 83 ? ? ? ? 24 07");
+			hook::nop(repairFunc, 6);
+			hook::call_reg<2>(repairFunc, asmfunc.GetCode());
+		}
 	}
 
 	rage::OnInitFunctionEnd.Connect([](rage::InitFunctionType type)
@@ -1189,6 +1197,14 @@ static bool g_useWGI = true;
 
 static DWORD WINAPI XInputGetStateHook(_In_ DWORD dwUserIndex, _Out_ XINPUT_STATE* pState)
 {
+	// if we're running Steam, don't - Steam will crash in numerous scenarios.
+	static auto gameOverlay = GetModuleHandleW(L"gameoverlayrenderer64.dll");
+
+	if (gameOverlay != NULL)
+	{
+		return g_origXInputGetState(dwUserIndex, pState);
+	}
+
 	auto gamepads = Gamepad::Gamepads();
 
 	if (gamepads.Size() == 0 || !g_useWGI)
@@ -1289,6 +1305,14 @@ static DWORD(*WINAPI g_origXInputSetState)(_In_ DWORD dwUserIndex, _In_ XINPUT_V
 
 static DWORD WINAPI XInputSetStateHook(_In_ DWORD dwUserIndex, _In_ XINPUT_VIBRATION* pVibration)
 {
+	// if we're running Steam, don't - Steam will crash in numerous scenarios.
+	static auto gameOverlay = GetModuleHandleW(L"gameoverlayrenderer64.dll");
+
+	if (gameOverlay != NULL)
+	{
+		return g_origXInputSetState(dwUserIndex, pVibration);
+	}
+
 	auto gamepads = Gamepad::Gamepads();
 
 	if (gamepads.Size() == 0 || !g_useWGI)

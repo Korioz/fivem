@@ -1,4 +1,5 @@
-<div class="overlay" [class.active]="showOverlay" (keydown)="onKeyPress($event)" tabindex="1">
+<div class="overlay" [class.active]="showOverlay" [class.bigBlur]="inSwitchCL" (keydown)="onKeyPress($event)" tabindex="1">
+	<div class="wrap">
 	<div class="inner" style="--bg: url({{overlayBg}})">
 		<h1 class="title">
 			{{(overlayTitle)|translate:locale.language:overlayMessageData}}
@@ -6,7 +7,7 @@
 		<p
 			class="content"
 			(click)="clickContent($event)"
-			[innerHTML]="overlayMessage|translate:locale.language:overlayMessageData|linky:{ hashtag: 'twitter', mention: 'twitter', sanitizeHtml: true }|nl2br|allowify"
+			[innerHTML]="overlayMessage|translate:locale.language:overlayMessageData|linky:{ hashtag: 'twitter', mention: 'twitter', sanitizeHtml: true }|nl2br|allowify|rejectify:{server:serverData}"
 		></p>
 		<div class="card" #card></div>
 		<button
@@ -16,6 +17,7 @@
 		>
 			{{closeLabel|translate:locale.language}}
 		</button>
+	</div>
 	</div>
 </div>
 

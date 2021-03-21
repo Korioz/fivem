@@ -112,7 +112,7 @@ static void glBindTextureHook(GLenum target, GLuint texture)
 
 	// this gets called really frequently but do we want to do so here?
 	static HANDLE lastBackbufHandle;
-	static HostSharedData<GameRenderData> handleData("CfxGameRenderHandle");
+	static HostSharedData<GameRenderData> handleData(launch::IsSDK() ? "CfxGameRenderHandleFxDK" : "CfxGameRenderHandle");
 
 	if (handleData->handle != lastBackbufHandle)
 	{
@@ -140,7 +140,7 @@ static void BindGameRenderHandle()
 
 	auto m_display = _eglGetCurrentDisplay();
 
-	static HostSharedData<GameRenderData> handleData("CfxGameRenderHandle");
+	static HostSharedData<GameRenderData> handleData(launch::IsSDK() ? "CfxGameRenderHandleFxDK" : "CfxGameRenderHandle");
 
 	EGLint pbuffer_attributes[] = {
 		EGL_WIDTH, handleData->width,
@@ -356,7 +356,7 @@ public:
 	~Texture2DWrap();
 
 	// Inherited via RuntimeClass
-	virtual HRESULT AcquireSync(UINT64 Key, DWORD dwMilliseconds) override
+	virtual HRESULT STDMETHODCALLTYPE AcquireSync(UINT64 Key, DWORD dwMilliseconds) override
 	{
 		if (m_keyedMutex)
 		{
@@ -366,7 +366,7 @@ public:
 		return S_OK;
 	}
 
-	virtual HRESULT ReleaseSync(UINT64 Key) override
+	virtual HRESULT STDMETHODCALLTYPE ReleaseSync(UINT64 Key) override
 	{
 		if (m_keyedMutex)
 		{
@@ -527,7 +527,7 @@ HRESULT Texture2DWrap::GetSharedHandle(HANDLE* pSharedHandle)
 
 	if (SUCCEEDED(hr))
 	{
-		auto proc = OpenProcess(PROCESS_DUP_HANDLE, FALSE, initState->GetInitialPid());
+		auto proc = OpenProcess(PROCESS_DUP_HANDLE, FALSE, (initState->gamePid) ? initState->gamePid : initState->GetInitialPid());
 		DuplicateHandle(GetCurrentProcess(), handle, proc, pSharedHandle, 0, FALSE, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE);
 		CloseHandle(proc);
 
@@ -708,7 +708,7 @@ static void PatchCreateResults(ID3D11Device** ppDevice, ID3D11DeviceContext** pp
 	can = wcsstr(GetCommandLineW(), L"type=gpu") != nullptr;
 #endif
 
-	if (ppDevice && ppImmediateContext && can)
+	if (ppDevice && ppImmediateContext && can && *ppDevice && *ppImmediateContext)
 	{
 		auto vtbl = **(intptr_t***)ppDevice;
 		auto vtblCxt = **(intptr_t***)ppImmediateContext;
@@ -728,7 +728,7 @@ static void PatchCreateResults(ID3D11Device** ppDevice, ID3D11DeviceContext** pp
 		(*ppDevice)->GetImmediateContext(&g_origImContext);
 	}
 
-	if (ppDevice && ppImmediateContext)
+	if (ppDevice && ppImmediateContext && *ppDevice)
 	{
 		g_origDevice = *ppDevice;
 	}
@@ -814,6 +814,7 @@ static HRESULT D3D11CreateDeviceHookMain(_In_opt_ IDXGIAdapter* pAdapter, D3D_DR
 
 void HookLibGL(HMODULE libGL)
 {
+#if !GTA_NY
 	wchar_t systemDir[MAX_PATH];
 	GetSystemDirectoryW(systemDir, std::size(systemDir));
 
@@ -870,6 +871,7 @@ void HookLibGL(HMODULE libGL)
 	}
 
 	MH_EnableHook(MH_ALL_HOOKS);
+#endif
 }
 
 extern bool g_inited;
@@ -907,7 +909,8 @@ void Component_RunPreInit()
 	}
 
 	{
-		auto network__SetFetchMetadataHeaders = (uint8_t*)((char*)libcef + 0x3c7a2c8);
+		// echo network::SetFetchMetadataHeaders | pdbdump -r libcef.dll.pdb:0x180000000
+		auto network__SetFetchMetadataHeaders = (uint8_t*)((char*)libcef + 0x3d36e0c);
 
 		if (*network__SetFetchMetadataHeaders == 0x41)
 		{
@@ -1027,13 +1030,15 @@ void Initialize(nui::GameInterface* gi)
     HookFunctionBase::RunAll();
 
 #if defined(GTA_NY)
-	OnGrcBeginScene.Connect([] ()
+
+	// #TODOLIBERTY:
+	/*OnGrcBeginScene.Connect([] ()
 	{
 		Instance<NUIWindowManager>::Get()->ForAllWindows([] (fwRefContainer<NUIWindow> window)
 		{
 			window->UpdateFrame();
 		});
-	});
+	});*/
 #else
 
 #endif

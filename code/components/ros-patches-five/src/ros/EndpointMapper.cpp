@@ -77,17 +77,23 @@ static InitFunction initFunction([] ()
 	httpServer->AddRef();
 	httpServer->RegisterHandler(endpointMapper);
 
-	if (wcsstr(GetCommandLine(), L"ros:legit") == nullptr && wcsstr(GetCommandLine(), L"ros:steam") == nullptr)
+	if (wcsstr(GetCommandLine(), L"ros:legit") == nullptr && wcsstr(GetCommandLine(), L"ros:steam") == nullptr && wcsstr(GetCommandLine(), L"ros:epic") == nullptr)
 	{
 		auto domains = {
 			"prod.ros.rockstargames.com",
 			"auth-prod.ros.rockstargames.com",
 			"auth-gta5-prod.ros.rockstargames.com",
+#ifndef GTA_NY
 			"rgl-prod.ros.rockstargames.com",
 			"auth-rgl-prod.ros.rockstargames.com",
 			"ps-rgl-prod.ros.rockstargames.com",
 			"prs-rgl-prod.ros.rockstargames.com",
 			"app-rgl-prod.ros.rockstargames.com",
+#endif
+			"prs-gta4-prod.ros.rockstargames.com",
+			"gta4-prod.ros.rockstargames.com",
+			"auth-gta4-prod.ros.rockstargames.com",
+#ifdef IS_RDR3
 			"crews-rdr2-prod.ros.rockstargames.com",
 			"prs-rdr2-prod.ros.rockstargames.com",
 			"ugc-rdr2-prod.ros.rockstargames.com",
@@ -97,6 +103,7 @@ static InitFunction initFunction([] ()
 			"feed-rdr2-prod.ros.rockstargames.com",
 			"conductor-rdr2-prod.ros.rockstargames.com",
 			"challenges-rdr2-prod.ros.rockstargames.com",
+#endif
 			"prod-locator-cloud.rockstargames.com",
 			"www.google-analytics.com",
 		};

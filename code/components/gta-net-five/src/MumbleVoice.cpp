@@ -30,6 +30,9 @@
 
 #include <CrossBuildRuntime.h>
 
+#include <ResourceManager.h>
+#include <ResourceEventComponent.h>
+
 #if __has_include(<GameAudioState.h>)
 #include <GameAudioState.h>
 #endif
@@ -118,7 +121,14 @@ static struct
 	concurrency::concurrent_queue<std::function<void()>> mainFrameExecQueue;
 } g_mumble;
 
-static void Mumble_Connect()
+static bool g_voiceActiveByScript = true;
+
+static bool Mumble_ShouldConnect()
+{
+	return g_preferenceArray[PREF_VOICE_ENABLE] && Instance<ICoreGameInit>::Get()->OneSyncEnabled && g_voiceActiveByScript;
+}
+
+static void Mumble_Connect(bool isReconnect = false)
 {
 	g_mumble.connected = false;
 	g_mumble.errored = false;
@@ -126,11 +136,24 @@ static void Mumble_Connect()
 
 	_initVoiceChatConfig();
 
-	g_mumbleClient->ConnectAsync(g_mumble.overridePeer ? *g_mumble.overridePeer : g_netLibrary->GetCurrentPeer(), fmt::sprintf("[%d] %s", g_netLibrary->GetServerNetID(), g_netLibrary->GetPlayerName())).then([](concurrency::task<MumbleConnectionInfo*> task)
+	g_mumbleClient->ConnectAsync(g_mumble.overridePeer ? *g_mumble.overridePeer : g_netLibrary->GetCurrentPeer(), fmt::sprintf("[%d] %s", g_netLibrary->GetServerNetID(), g_netLibrary->GetPlayerName())).then([&](concurrency::task<MumbleConnectionInfo*> task)
 	{
 		try
 		{
 			auto info = task.get();
+
+			auto eventManager = Instance<fx::ResourceManager>::Get()->GetComponent<fx::ResourceEventManagerComponent>();
+
+			/*NETEV mumbleConnected CLIENT
+			/#*
+			 * An event triggered when the game completes (re)connecting to a Mumble server.
+			 *
+			 * @param address - The address of the Mumble server connected to.
+             * @param reconnecting - Is this a reconnection to a Mumble server.
+			 #/
+			declare function mumbleConnected(address: string, reconnecting: boolean): void;
+			*/
+			eventManager->QueueEvent2("mumbleConnected", {}, info->address.ToString(), isReconnect);
 
 			g_mumble.connectionInfo = g_mumbleClient->GetConnectionInfo();
 
@@ -155,6 +178,8 @@ static void Mumble_Connect()
 
 static void Mumble_Disconnect(bool reconnect = false)
 {
+	auto mumbleConnectionInfo = g_mumbleClient->GetConnectionInfo();
+
 	g_mumble.connected = false;
 	g_mumble.errored = false;
 	g_mumble.connecting = false;
@@ -162,9 +187,24 @@ static void Mumble_Disconnect(bool reconnect = false)
 
 	g_mumbleClient->DisconnectAsync().then([=]()
 	{
-		if (reconnect)
+        if (!reconnect && mumbleConnectionInfo)
+        {
+            auto eventManager = Instance<fx::ResourceManager>::Get()->GetComponent<fx::ResourceEventManagerComponent>();
+
+		    /*NETEV mumbleDisconnected CLIENT
+		    /#*
+		     * An event triggered when the game disconnects from a Mumble server without being reconnected.
+		     *
+		     * @param address - The address of the Mumble server disconnected from.
+		     #/
+		    declare function mumbleDisconnected(address: string): void;
+		    */
+		    eventManager->QueueEvent2("mumbleDisconnected", {}, mumbleConnectionInfo ? mumbleConnectionInfo->address.ToString() : NULL);
+        }
+        
+		if (reconnect && Mumble_ShouldConnect())
 		{
-			Mumble_Connect();
+			Mumble_Connect(true);
 		}
 	});
 
@@ -194,8 +234,6 @@ public:
 static CViewportGame** g_viewportGame;
 static float* g_actorPos;
 
-static bool g_voiceActiveByScript = true;
-
 #pragma comment(lib, "dsound.lib")
 
 static void Mumble_RunFrame()
@@ -210,11 +248,9 @@ static void Mumble_RunFrame()
 		return;
 	}
 
-	bool shouldConnect = g_preferenceArray[PREF_VOICE_ENABLE] && Instance<ICoreGameInit>::Get()->OneSyncEnabled && g_voiceActiveByScript;
-
 	if (!g_mumble.connected || (g_mumble.connectionInfo && !g_mumble.connectionInfo->isConnected))
 	{
-		if (shouldConnect && !g_mumble.connecting && !g_mumble.errored)
+		if (Mumble_ShouldConnect() && !g_mumble.connecting && !g_mumble.errored)
 		{
 			if (GetTickCount64() > g_mumble.nextConnectAt)
 			{
@@ -233,7 +269,7 @@ static void Mumble_RunFrame()
 	}
 	else
 	{
-		if (!shouldConnect)
+		if (!Mumble_ShouldConnect())
 		{
 			Mumble_Disconnect();
 		}
@@ -968,7 +1004,7 @@ static HookFunction hookFunction([]()
 
 		fx::ScriptEngine::RegisterNativeHandler(0x84F0F13120B4E098, [=](fx::ScriptContext& context)
 		{
-			(*origSetProximity)(context);
+			(*origGetProximity)(context);
 
 			float proximity = g_mumbleClient->GetAudioDistance();
 

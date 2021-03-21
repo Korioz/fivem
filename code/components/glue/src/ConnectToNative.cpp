@@ -18,6 +18,7 @@
 #include <CoreConsole.h>
 #include <ICoreGameInit.h>
 #include <GameInit.h>
+#include <ScriptEngine.h>
 //New libs needed for saveSettings
 #include <fstream>
 #include <sstream>
@@ -51,6 +52,9 @@
 
 std::string g_lastConn;
 
+extern bool XBR_InterceptCardResponse(const nlohmann::json& j);
+extern bool XBR_InterceptCancelDefer();
+
 static LONG WINAPI TerminateInstantly(LPEXCEPTION_POINTERS pointers)
 {
 	if (pointers->ExceptionRecord->ExceptionCode == STATUS_BREAKPOINT)
@@ -61,25 +65,53 @@ static LONG WINAPI TerminateInstantly(LPEXCEPTION_POINTERS pointers)
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
-static void RestartGameToOtherBuild(int build = 0)
+static void SaveBuildNumber(uint32_t build)
 {
-#ifdef GTA_FIVE
+	std::wstring fpath = MakeRelativeCitPath(L"CitizenFX.ini");
+
+	if (GetFileAttributes(fpath.c_str()) != INVALID_FILE_ATTRIBUTES)
+	{
+		WritePrivateProfileString(L"Game", L"SavedBuildNumber", fmt::sprintf(L"%d", build).c_str(), fpath.c_str());
+	}
+}
+
+void RestartGameToOtherBuild(int build = 0)
+{
+#if defined(GTA_FIVE) || defined(IS_RDR3)
 	static HostSharedData<CfxState> hostData("CfxInitState");
 	const wchar_t* cli;
 
 	if (!build)
 	{
-		cli = va(L"\"%s\" %s -switchcl +connect \"%s\"",
+		cli = va(L"\"%s\" %s -switchcl \"fivem://connect/%s\"",
 		hostData->gameExePath,
 		Is2060() ? L"" : L"-b2060",
 		ToWide(g_lastConn));
+
+		build = (Is2060()) ? 1604 : 2060;
 	}
 	else
 	{
-		cli = va(L"\"%s\" %s -switchcl +connect \"%s\"",
+		cli = va(L"\"%s\" %s -switchcl \"fivem://connect/%s\"",
 		hostData->gameExePath,
 		build == 1604 ? L"" : fmt::sprintf(L"-b%d", build),
 		ToWide(g_lastConn));
+	}
+
+	uint32_t defaultBuild =
+#ifdef GTA_FIVE
+	1604
+#elif defined(IS_RDR3)
+	1311
+#else
+	0
+#endif
+	;
+
+	// we won't launch the default build if we don't do this
+	if (build == defaultBuild)
+	{
+		SaveBuildNumber(defaultBuild);
 	}
 
 	STARTUPINFOW si = { 0 };
@@ -95,6 +127,8 @@ static void RestartGameToOtherBuild(int build = 0)
 	ExitProcess(0x69);
 #endif
 }
+
+extern void InitializeBuildSwitch(int build);
 
 void saveSettings(const wchar_t *json) {
 	PWSTR appDataPath;
@@ -177,16 +211,29 @@ inline bool HasDefaultName()
 	return false;
 }
 
-static NetLibrary* netLibrary;
+NetLibrary* netLibrary;
 static bool g_connected;
 
-static void ConnectTo(const std::string& hostnameStr, bool fromUI = false)
+static void ConnectTo(const std::string& hostnameStr, bool fromUI = false, const std::string& connectParams = "")
 {
-	if (!fromUI)
+	auto connectParamsReal = connectParams;
+	static bool switched;
+
+	if (wcsstr(GetCommandLineW(), L"-switchcl") && !switched)
+	{
+		connectParamsReal = "switchcl=true&" + connectParamsReal;
+		switched = true;
+	}
+
+	if (!fromUI && !launch::IsSDKGuest())
 	{
 		if (nui::HasMainUI())
 		{
-			auto j = nlohmann::json::object({ { "type", "connectTo" }, { "hostnameStr", hostnameStr } });
+			auto j = nlohmann::json::object({
+				{ "type", "connectTo" },
+				{ "hostnameStr", hostnameStr },
+				{ "connectParams", connectParamsReal }
+			});
 			nui::PostFrameMessage("mpMenu", j.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace));
 
 			return;
@@ -397,7 +444,8 @@ static InitFunction initFunction([] ()
 
 		netLibrary->OnRequestBuildSwitch.Connect([](int build)
 		{
-			RestartGameToOtherBuild(build);
+			InitializeBuildSwitch(build);
+			g_connected = false;
 		});
 
 		netLibrary->OnConnectionError.Connect([] (const char* error)
@@ -408,6 +456,8 @@ static InitFunction initFunction([] ()
 				RestartGameToOtherBuild();
 			}
 #endif
+
+			console::Printf("no_console", "OnConnectionError: %s\n", error);
 
 			g_connected = false;
 
@@ -426,6 +476,8 @@ static InitFunction initFunction([] ()
 
 		netLibrary->OnConnectionProgress.Connect([] (const std::string& message, int progress, int totalProgress)
 		{
+			console::Printf("no_console", "OnConnectionProgress: %s\n", message);
+
 			rapidjson::Document document;
 			document.SetObject();
 			document.AddMember("message", rapidjson::Value(message.c_str(), message.size(), document.GetAllocator()), document.GetAllocator());
@@ -464,6 +516,11 @@ static InitFunction initFunction([] ()
 			}
 
 			ep.Call("connectionError", std::string("Cards don't exist here yet!"));
+		});
+
+		netLibrary->OnStateChanged.Connect([](NetLibrary::ConnectionState currentState, NetLibrary::ConnectionState previousState)
+		{
+			ep.Call("connectionStateChanged", (int)currentState, (int)previousState);
 		});
 
 		static std::function<void()> finishConnectCb;
@@ -574,6 +631,19 @@ static InitFunction initFunction([] ()
 		g_connected = false;
 	});
 
+	if (launch::IsSDKGuest())
+	{
+		fx::ScriptEngine::RegisterNativeHandler("SEND_SDK_MESSAGE", [](fx::ScriptContext& context)
+		{
+			ep.Call("sdk:message", std::string(context.GetArgument<const char*>(0)));
+		});
+
+		console::CoreAddPrintListener([](ConsoleChannel channel, const char* msg)
+		{
+			ep.Call("sdk:consoleMessage", channel, std::string(msg));
+		});
+	}
+
 	static ConsoleCommand connectCommand("connect", [](const std::string& server)
 	{
 		ConnectTo(server);
@@ -634,6 +704,15 @@ static InitFunction initFunction([] ()
 		auto wnd = FindWindow(L"grcWindow", NULL);
 
 		SetWindowPos(wnd, NULL, 0, 0, w, h, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+	});
+
+	ep.Bind("sdk:invokeNative", [](const std::string& nativeType, const std::string& argumentData)
+	{
+		if (nativeType == "sendCommand")
+		{
+			se::ScopedPrincipal ps{ se::Principal{"system.console"} };
+			console::GetDefaultContext()->ExecuteSingleCommand(argumentData);
+		}
 	});
 
 	static ConsoleCommand disconnectCommand("disconnect", []()
@@ -708,6 +787,14 @@ static InitFunction initFunction([] ()
 			auto manifest = CoreGetMinModeManifest();
 
 			nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "setMinModeInfo", "enabled": %s, "data": %s })", manifest->IsEnabled() ? "true" : "false", manifest->GetRaw()));
+
+			static bool initSwitched;
+
+			if (wcsstr(GetCommandLineW(), L"-switchcl") && !initSwitched)
+			{
+				nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "setSwitchCl", "enabled": %s })", true));
+				initSwitched = true;
+			}
 		}
 		else if (!_wcsicmp(type, L"connectTo"))
 		{
@@ -718,7 +805,10 @@ static InitFunction initFunction([] ()
 		}
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{
-			netLibrary->CancelDeferredConnection();
+			if (!XBR_InterceptCancelDefer())
+			{
+				netLibrary->CancelDeferredConnection();
+			}
 
 			g_connected = false;
 		}
@@ -793,7 +883,12 @@ static InitFunction initFunction([] ()
 		}
 		else if (!_wcsicmp(type, L"checkNickname"))
 		{
-			if (!arg || !arg[0] || !netLibrary) return;
+			if (!arg || !arg[0] || !netLibrary)
+			{
+				trace("Failed to set nickname\n");
+				return;
+			}
+
 			const char* text = netLibrary->GetPlayerName();
 			std::string newusername = ToNarrow(arg);
 
@@ -892,9 +987,12 @@ static InitFunction initFunction([] ()
 			{
 				auto json = nlohmann::json::parse(ToNarrow(arg));
 
-				if (!g_cardConnectionToken.empty())
+				if (!XBR_InterceptCardResponse(json))
 				{
-					netLibrary->SubmitCardResponse(json["data"].dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace), g_cardConnectionToken);
+					if (!g_cardConnectionToken.empty())
+					{
+						netLibrary->SubmitCardResponse(json["data"].dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace), g_cardConnectionToken);
+					}
 				}
 			}
 			catch (const std::exception& e)
@@ -971,7 +1069,9 @@ static InitFunction initFunction([] ()
 	});
 });
 
+#ifndef GTA_NY
 #include <gameSkeleton.h>
+#endif
 #include <shellapi.h>
 
 #include <nng/nng.h>
@@ -1052,6 +1152,7 @@ void Component_RunPreInit()
 	LPWSTR* argv = CommandLineToArgvW(GetCommandLine(), &argc);
 
 	static std::string connectHost;
+	static std::string connectParams;
 	static std::string authPayload;
 
 	for (int i = 1; i < argc; i++)
@@ -1071,6 +1172,11 @@ void Component_RunPreInit()
 						if (!parsed->pathname().empty())
 						{
 							connectHost = parsed->pathname().substr(1);
+							const auto& search = parsed->search_parameters();
+							if (!search.empty())
+							{
+								connectParams = search.to_string();
+							}
 						}
 					}
 					else if (parsed->host() == "accept-auth")
@@ -1093,23 +1199,30 @@ void Component_RunPreInit()
 	{
 		if (hostData->IsMasterProcess() || hostData->IsGameProcess())
 		{
+// #TODOLIBERTY: ?
+#ifndef GTA_NY
 			rage::OnInitFunctionStart.Connect([](rage::InitFunctionType type)
 			{
 				if (type == rage::InitFunctionType::INIT_CORE)
 				{
-					ConnectTo(connectHost);
+					ConnectTo(connectHost, false, connectParams);
 					connectHost = "";
+					connectParams = "";
 				}
 			}, 999999);
+#endif
 		}
 		else
 		{
 			nng_socket socket;
 			nng_dialer dialer;
 
+			auto j = nlohmann::json::object({ { "host", connectHost }, { "params", connectParams } });
+			std::string connectMsg = j.dump(-1, ' ', false, nlohmann::detail::error_handler_t::strict);
+
 			nng_push0_open(&socket);
 			nng_dial(socket, "ipc:///tmp/fivem_connect", &dialer, 0);
-			nng_send(socket, const_cast<char*>(connectHost.c_str()), connectHost.size(), 0);
+			nng_send(socket, const_cast<char*>(connectMsg.c_str()), connectMsg.size(), 0);
 
 			if (!hostData->gamePid)
 			{
@@ -1128,6 +1241,8 @@ void Component_RunPreInit()
 	{
 		if (hostData->IsMasterProcess() || hostData->IsGameProcess())
 		{
+// #TODOLIBERTY: ?
+#ifndef GTA_NY
 			rage::OnInitFunctionStart.Connect([](rage::InitFunctionType type)
 			{
 				if (type == rage::InitFunctionType::INIT_CORE)
@@ -1136,6 +1251,7 @@ void Component_RunPreInit()
 					authPayload = "";
 				}
 			}, 999999);
+#endif
 		}
 		else
 		{
@@ -1162,6 +1278,16 @@ void Component_RunPreInit()
 
 static InitFunction connectInitFunction([]()
 {
+#if __has_include(<gameSkeleton.h>)
+	rage::OnInitFunctionStart.Connect([](rage::InitFunctionType type)
+	{
+		if (type == rage::INIT_BEFORE_MAP_LOADED)
+		{
+			SaveBuildNumber(xbr::GetGameBuild());
+		}
+	});
+#endif
+
 	static nng_socket netSocket;
 	static nng_listener listener;
 
@@ -1193,7 +1319,8 @@ static InitFunction connectInitFunction([]()
 			std::string connectMsg(buffer, buffer + bufLen);
 			nng_free(buffer, bufLen);
 
-			ConnectTo(connectMsg);
+			auto connectData = nlohmann::json::parse(connectMsg);
+			ConnectTo(connectData["host"], false, connectData["params"]);
 
 			SetForegroundWindow(FindWindow(L"grcWindow", nullptr));
 		}

@@ -280,8 +280,16 @@ static InitFunction initFunction([]()
 		g_enforcedGameBuild = "1604";
 		auto enforceGameBuildVar = instance->AddVariable<std::string>("sv_enforceGameBuild", ConVar_ReadOnly | ConVar_ServerInfo, "1604", &g_enforcedGameBuild);
 
-		instance->GetComponent<fx::GameServer>()->OnTick.Connect([instance]()
+		instance->GetComponent<fx::GameServer>()->OnTick.Connect([instance, enforceGameBuildVar]()
 		{
+			if (instance->GetComponent<fx::GameServer>()->GetGameName() == fx::GameName::RDR3)
+			{
+				if (g_enforcedGameBuild == "1604")
+				{
+					enforceGameBuildVar->GetHelper()->SetRawValue("1311");
+				}
+			}
+
 			auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
 
 			clientRegistry->ForAllClients([](const fx::ClientSharedPtr& client)
@@ -320,7 +328,7 @@ static InitFunction initFunction([]()
 			auto client = clientRegistry->GetClientByConnectionToken(tokenIt->second);
 			if (!client)
 			{
-				cb(json{ false });
+				cb(false);
 			}
 			else
 			{
@@ -413,6 +421,14 @@ static InitFunction initFunction([]()
 
 			switch (instance->GetComponent<fx::GameServer>()->GetGameName())
 			{
+			case fx::GameName::GTA4:
+				intendedGameName = "gta4";
+
+				if (gameName == "gta4")
+				{
+					validGameName = true;
+				}
+				break;
 			case fx::GameName::GTA5:
 				intendedGameName = "gta5";
 
@@ -485,7 +501,7 @@ static InitFunction initFunction([]()
 
 			json data = json::object();
 			data["protocol"] = 5;
-			data["bitVersion"] = 0x202011231556;
+			data["bitVersion"] = 0x202103030422;
 			data["sH"] = shVar->GetValue();
 			data["enhancedHostSupport"] = ehVar->GetValue() && !fx::IsOneSync();
 			data["onesync"] = fx::IsOneSync();
@@ -636,15 +652,19 @@ static InitFunction initFunction([]()
 					return;
 				}
 
-				if (instance->GetComponent<fx::GameServer>()->GetGameName() == fx::GameName::GTA5 && !enforceGameBuildVar->GetValue().empty() && enforceGameBuildVar->GetValue() != gameBuild)
+				auto svGame = instance->GetComponent<fx::GameServer>()->GetGameName();
+				bool canEnforceBuild = (svGame == fx::GameName::GTA5 || svGame == fx::GameName::RDR3);
+
+				if (canEnforceBuild && !enforceGameBuildVar->GetValue().empty() && enforceGameBuildVar->GetValue() != gameBuild)
 				{
 					clientRegistry->RemoveClient(lockedClient);
 
 					sendError(
 						fmt::sprintf(
-							"This server requires a different game build (%s) from the one you're using (%s). Tell the server owner to remove this check.",
+							"This server requires a different game build (%s) from the one you're using (%s).%s",
 							enforceGameBuildVar->GetValue(),
-							gameBuild
+							gameBuild,
+							(svGame == fx::GameName::GTA5) ? " Tell the server owner to remove this check." : ""
 						)
 					);
 
@@ -755,112 +775,114 @@ static InitFunction initFunction([]()
 					*deferrals = nullptr;
 				});
 
-				MonoEnsureThreadAttached();
-
-				/*NETEV playerConnecting SERVER
-				/#*
-				 * A server-side event that is triggered when a player is trying to connect.
-				 *
-				 * This event can be canceled to reject the player *instantly*, assuming you haven't yielded.
-				 *
-				 * @param playerName - The display name of the player connecting.
-				 * @param setKickReason - A function used to set a reason message for when the event is canceled.
-				 * @param deferrals - An object to control deferrals.
-				 * @param source - The player's *temporary* NetID (a number in Lua/JS), **not a real argument, use [FromSource] or source**.
-				 #/
-				declare function playerConnecting(playerName: string, setKickReason: (reason: string) => void, deferrals: {
+				gscomms_execute_callback_on_main_thread([=]
+				{
+					/*NETEV playerConnecting SERVER
 					/#*
-					 * `deferrals.defer` will initialize deferrals for the current resource. It is required to wait for at least a tick after calling defer before calling `update`, `presentCard` or `done`.
-					 #/
-					defer(): void,
-
-					/#*
-					 * `deferrals.update` will send a progress message to the connecting client.
+					 * A server-side event that is triggered when a player is trying to connect.
 					 *
-					 * @param message - The string to send to the client.
-					 #/
-					update(message: string): void,
-
-					/#*
-					 * `deferrals.presentCard` will send an [Adaptive Card](https://adaptivecards.io/) to the client.
+					 * This event can be canceled to reject the player *instantly*, assuming you haven't yielded.
 					 *
-					 * @param card - An object containing card data, or a serialized JSON string with the card information.
-					 * @param cb - If present, will be invoked on an `Action.Submit` event from the Adaptive Card.
+					 * @param playerName - The display name of the player connecting.
+					 * @param setKickReason - A function used to set a reason message for when the event is canceled.
+					 * @param deferrals - An object to control deferrals.
+					 * @param source - The player's *temporary* NetID (a number in Lua/JS), **not a real argument, use [FromSource] or source**.
 					 #/
-					presentCard(
-						card: object | string,
-						cb?:
+					declare function playerConnecting(playerName: string, setKickReason: (reason: string) => void, deferrals: {
 						/#*
-						 * A callback to be invoked for `Action.Submit`.
-						 *
-						 * @param data - A parsed version of the data sent from the card.
-						 * @param rawData - A JSON string containing the data sent from the card.
+						 * `deferrals.defer` will initialize deferrals for the current resource. It is required to wait for at least a tick after calling defer before calling `update`, `presentCard` or `done`.
 						 #/
-						  (data: any, rawData: string) => void
-					): void,
+						defer(): void,
 
-					/#*
-					 * `deferrals.done` finalizes a deferral. It is required to wait for at least a tick before calling `done` after calling a prior deferral method.
-					 *
-					 * @param failureReason - If specified, the connection will be refused, and the user will see the specified message as a result. If this is not specified, the user will be allowed to connect.
-					 #/
-					done(failureReason?: string): void,
+						/#*
+						 * `deferrals.update` will send a progress message to the connecting client.
+						 *
+						 * @param message - The string to send to the client.
+						 #/
+						update(message: string): void,
 
-					/#*
-					 * `deferrals.handover` adds handover data for the client to be able to use at a later point.
-					 *
-					 * @param data - Data to pass to the connecting client.
-					 #/
-					handover(data: { [key: string]: any }): void,
-				}, source: string): void;
-				*/
-				bool shouldAllow = eventManager->TriggerEvent2("playerConnecting", { fmt::sprintf("net:%d", lockedClient->GetNetId()) }, lockedClient->GetName(), cbComponent->CreateCallback([noReason](const msgpack::unpacked& unpacked)
-				{
-					auto obj = unpacked.get().as<std::vector<msgpack::object>>();
+						/#*
+						 * `deferrals.presentCard` will send an [Adaptive Card](https://adaptivecards.io/) to the client.
+						 *
+						 * @param card - An object containing card data, or a serialized JSON string with the card information.
+						 * @param cb - If present, will be invoked on an `Action.Submit` event from the Adaptive Card.
+						 #/
+						presentCard(
+							card: object | string,
+							cb?:
+							/#*
+							 * A callback to be invoked for `Action.Submit`.
+							 *
+							 * @param data - A parsed version of the data sent from the card.
+							 * @param rawData - A JSON string containing the data sent from the card.
+							 #/
+							  (data: any, rawData: string) => void
+						): void,
 
-					if (obj.size() == 1)
+						/#*
+						 * `deferrals.done` finalizes a deferral. It is required to wait for at least a tick before calling `done` after calling a prior deferral method.
+						 *
+						 * @param failureReason - If specified, the connection will be refused, and the user will see the specified message as a result. If this is not specified, the user will be allowed to connect.
+						 #/
+						done(failureReason?: string): void,
+
+						/#*
+						 * `deferrals.handover` adds handover data for the client to be able to use at a later point.
+						 *
+						 * @param data - Data to pass to the connecting client.
+						 #/
+						handover(data: { [key: string]: any }): void,
+					}, source: string): void;
+					*/
+					bool shouldAllow = eventManager->TriggerEvent2("playerConnecting", { fmt::sprintf("internal-net:%d", lockedClient->GetNetId()) }, lockedClient->GetName(), cbComponent->CreateCallback([noReason](const msgpack::unpacked& unpacked)
 					{
-						**noReason = obj[0].as<std::string>();
+						auto obj = unpacked.get().as<std::vector<msgpack::object>>();
+
+						if (obj.size() == 1)
+						{
+							**noReason = obj[0].as<std::string>();
+						}
+					}),
+					(*deferrals)->GetCallbacks());
+
+					if (!shouldAllow)
+					{
+						clientRegistry->RemoveClient(lockedClient);
+
+						sendError(**noReason);
+						return;
 					}
-				}), (*deferrals)->GetCallbacks());
 
-				if (!shouldAllow)
-				{
-					clientRegistry->RemoveClient(lockedClient);
+					if (*earlyReject)
+					{
+						clientRegistry->RemoveClient(lockedClient);
 
-					sendError(**noReason);
-					return;
-				}
+						sendError(**noReason);
+						return;
+					}
 
-				if (*earlyReject)
-				{
-					clientRegistry->RemoveClient(lockedClient);
+					// was the deferral already completed/canceled this frame? if so, just don't respond at all
+					auto deferralsRef = *deferrals;
 
-					sendError(**noReason);
-					return;
-				}
+					if (!deferralsRef)
+					{
+						return;
+					}
 
-				// was the deferral already completed/canceled this frame? if so, just don't respond at all
-				auto deferralsRef = *deferrals;
+					if (!deferralsRef->IsDeferred())
+					{
+						allowClient();
 
-				if (!deferralsRef)
-				{
-					return;
-				}
+						json dataNew = data;
+						addData(dataNew, *deferrals);
 
-				if (!deferralsRef->IsDeferred())
-				{
-					allowClient();
+						*cbRef = nullptr;
+						*deferrals = nullptr;
 
-					json dataNew = data;
-					addData(dataNew, *deferrals);
-
-					*cbRef = nullptr;
-					*deferrals = nullptr;
-
-					cb(dataNew);
-					cb(json(nullptr));
-				}
+						cb(dataNew);
+						cb(json(nullptr));
+					}
+				});
 			};
 
 			// seriously C++?

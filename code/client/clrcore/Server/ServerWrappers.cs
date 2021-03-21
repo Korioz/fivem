@@ -21,6 +21,12 @@ namespace CitizenFX.Core
 			{
 				sourceString = sourceString.Substring(4);
 			}
+#if IS_FXSERVER
+			else if (sourceString.StartsWith("internal-net:"))
+			{
+				sourceString = sourceString.Substring(13);
+			}
+#endif
 
 			m_handle = sourceString;
 		}
@@ -130,7 +136,7 @@ namespace CitizenFX.Core
 		/// </example>
 		/// <param name="type">The identifier type to return.</param>
 		/// <returns>The identifier value (without prefix), or null if it could not be found.</returns>
-		public string this[string type] => this.FirstOrDefault(id => id.Split(':')[0].Equals(type, StringComparison.InvariantCultureIgnoreCase))?.Split(':')?.Last();
+		public string this[string type] => this.FirstOrDefault(id => id.Split(':')[0].Equals(type, StringComparison.InvariantCultureIgnoreCase))?.Split(new char[] { ':' }, 2)?.Last();
 	}
 
 	public class PlayerList : IEnumerable<Player>

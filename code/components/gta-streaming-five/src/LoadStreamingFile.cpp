@@ -808,7 +808,14 @@ inline void HandleDataFileListWithTypes(TList& list, const TFn& fn, const std::s
 }
 #endif
 
-void LoadStreamingFiles(bool earlyLoad = false);
+enum class LoadType
+{
+	BeforeMapLoad,
+	BeforeSession,
+	AfterSession
+};
+
+void LoadStreamingFiles(LoadType loadType = LoadType::AfterSession);
 
 static LONG FilterUnmountOperation(DataFileEntry& entry)
 {
@@ -939,12 +946,29 @@ namespace rage
 	});
 }
 
-static void LoadStreamingFiles(bool earlyLoad)
+static void LoadStreamingFiles(LoadType loadType)
 {
 	// register any custom streaming assets
 	for (auto it = g_customStreamingFiles.begin(); it != g_customStreamingFiles.end(); )
 	{
 		auto [file, tag] = *it;
+
+		if (loadType == LoadType::BeforeMapLoad)
+		{
+			// only support tags mod_ and faux_pack
+			if (tag.find("mod_") != 0 && tag.find("faux_pack") != 0)
+			{
+				++it;
+				continue;
+			}
+
+			// don't allow spoofing for a (comp)cache
+			if (file.find("cache:/") != std::string::npos)
+			{
+				++it;
+				continue;
+			}
+		}
 
 		// get basename ('thing.ytd') and asset name ('thing')
 		const char* slashPos = strrchr(file.c_str(), '/');
@@ -977,7 +1001,7 @@ static void LoadStreamingFiles(bool earlyLoad)
 			continue;
 		}
 
-		if (earlyLoad)
+		if (loadType != LoadType::AfterSession)
 		{
 			if (ext == "ymap" || ext == "ytyp" || ext == "ybn")
 			{
@@ -1248,7 +1272,7 @@ static hook::cdecl_stub<void(void*, void* packfile, const char*)> loadManifest([
 #elif IS_RDR3
 static hook::cdecl_stub<void(void*, void* packfile, const char*, bool)> loadManifest([]()
 {
-	return hook::get_pattern("41 8A F1 49 8B D8 48 8B FA 4C 8B", -0x23);
+	return hook::get_pattern("83 A5 ? ? ? ? 00 E8 ? ? ? ? 48 8B C8 4C", -0x38);
 });
 #endif
 void LoadManifest(const char* tagName)
@@ -1258,10 +1282,28 @@ void LoadManifest(const char* tagName)
 	for (auto& namePair : fx::GetIteratorView(range))
 	{
 		auto name = namePair.second;
+		auto rel = new ForcedDevice(rage::fiDevice::GetDevice(name.c_str(), true), name);
+
+		// see if we can even read the file
+		{
+			auto handle = rel->Open(name.c_str(), true);
+
+			if (handle == uint64_t(-1))
+			{
+				continue;
+			}
+
+			char buf[16];
+			if (rel->Read(handle, buf, 16) != 16)
+			{
+				continue;
+			}
+
+			rel->Close(handle);
+		}
 
 		_initManifestChunk(manifestChunkPtr);
 
-		auto rel = new ForcedDevice(rage::fiDevice::GetDevice(name.c_str(), true), name);
 		rage::fiDevice::MountGlobal("localPack:/", rel, true);
 
 #ifdef GTA_FIVE
@@ -1434,6 +1476,7 @@ static std::atomic<int> g_lockedStreamingFiles;
 
 #ifdef GTA_FIVE
 void origCfxCollection_AddStreamingFileByTag(const std::string& tag, const std::string& fileName, rage::ResourceFlags flags);
+void origCfxCollection_BackoutStreamingTag(const std::string& tag);
 #endif
 
 void DLL_EXPORT CfxCollection_SetStreamingLoadLocked(bool locked)
@@ -1465,6 +1508,23 @@ void DLL_EXPORT CfxCollection_AddStreamingFileByTag(const std::string& tag, cons
 
 #ifdef GTA_FIVE
 	origCfxCollection_AddStreamingFileByTag(tag, fileName, flags);
+#endif
+}
+
+void DLL_EXPORT CfxCollection_BackoutStreamingTag(const std::string& tag)
+{
+	// undo whatever AddStreamingFileByTag did
+	for (auto& name : g_customStreamingFilesByTag[tag])
+	{
+		g_customStreamingFiles.erase({ name, tag });
+		g_customStreamingFileRefs.erase(name);
+	}
+
+	g_manifestNames.erase(tag);
+	g_customStreamingFilesByTag.erase(tag);
+
+#ifdef GTA_FIVE
+	origCfxCollection_BackoutStreamingTag(tag);
 #endif
 }
 
@@ -1554,7 +1614,8 @@ static void UnloadDataFiles()
 	{
 		trace("Unloading data files (%d entries)\n", g_loadedDataFiles.size());
 
-		HandleDataFileList(g_loadedDataFiles, [](CDataFileMountInterface* mounter, DataFileEntry& entry)
+		HandleDataFileList(g_loadedDataFiles,
+			[](CDataFileMountInterface* mounter, DataFileEntry& entry)
 		{
 			return mounter->UnmountFile(&entry);
 		}, "unloading");
@@ -1900,11 +1961,11 @@ static void LoadReplayDlc(void* ecw)
 {
 	g_lockReload = false;
 
-	LoadStreamingFiles(true);
+	LoadStreamingFiles(LoadType::BeforeSession);
 
 	g_origLoadReplayDlc(ecw);
 
-	LoadStreamingFiles();
+	LoadStreamingFiles(LoadType::AfterSession);
 	LoadDataFiles();
 }
 
@@ -1943,6 +2004,206 @@ static void fwMapDataStore__FinishLoadingHook(streaming::strStreamingModule* sto
 }
 #endif
 
+static bool ret0()
+{
+	return false;
+}
+
+#ifdef GTA_FIVE
+static void (*g_origLoadVehicleMeta)(DataFileEntry* entry, bool notMapTypes, uint32_t modelHash);
+static void (*g_origAddArchetype)(fwArchetype*, uint32_t typesHash);
+
+static void GetTxdRelationships(std::map<int, int>& map)
+{
+	static auto module = streaming::Manager::GetInstance()->moduleMgr.GetStreamingModule("ytd");
+	
+	atPoolBase* entryPool = (atPoolBase*)((char*)module + 56);
+	for (size_t i = 0; i < entryPool->GetSize(); i++)
+	{
+		if (auto entry = entryPool->GetAt<char>(i); entry)
+		{
+			int idx = -1;
+
+			if (xbr::IsGameBuildOrGreater<1868>())
+			{
+				idx = *(int32_t*)(entry + 16);
+			}
+			else
+			{
+				idx = *(uint16_t*)(entry + 16);
+
+				if (idx == 0xFFFF)
+				{
+					idx = -1;
+				}
+			}
+
+			if (idx >= 0)
+			{
+				map[i] = idx;
+			}
+		}
+	}
+}
+
+static std::multimap<uint32_t, std::pair<int, int>> g_undoTxdRelationships;
+static thread_local bool overrideTypesHash;
+
+#include <VFSManager.h>
+
+// since algorithms are hard, this
+// copied from SO: https://stackoverflow.com/a/5816029
+static void calc_z(std::string& s, std::vector<int>& z)
+{
+	int len = s.size();
+	z.resize(len);
+
+	int l = 0, r = 0;
+	for (int i = 1; i < len; ++i)
+		if (z[i - l] + i <= r)
+			z[i] = z[i - l];
+		else
+		{
+			l = i;
+			if (i > r)
+				r = i;
+			for (z[i] = r - i; r < len; ++r, ++z[i])
+				if (s[r] != s[z[i]])
+					break;
+			--r;
+		}
+}
+
+static std::unordered_set<uint32_t> g_hashes;
+
+static void LoadVehicleMetaForDlc(DataFileEntry* entry, bool notMapTypes, uint32_t modelHash)
+{
+	// try logging any and all txdstore relationships we made, to find any differences
+	std::map<int, int> txdRelationships;
+	GetTxdRelationships(txdRelationships);
+
+	// try to guess the amount of entries this meta file has
+	int entryCount = 16;
+
+	{
+		auto stream = vfs::OpenRead(entry->name);
+
+		if (stream.GetRef())
+		{
+			auto text = stream->ReadToEnd();
+			std::string textString{ text.begin(), text.end() };
+
+			std::string substring = "</modelName>";
+
+			// safe margin to start
+			entryCount = 4;
+
+			// more SO code: https://stackoverflow.com/a/5816029
+			textString = substring + textString;
+
+			std::vector<int> z;
+			calc_z(textString, z);
+
+			for (int i = substring.size(); i < textString.size(); ++i)
+			{
+				if (z[i] >= substring.size())
+				{
+					entryCount++;
+				}
+			}
+		}
+	}
+
+	// we use DLC name as hash
+	auto entryHash = HashString(entry->name);
+	g_archetypeFactories->Get(5)->GetOrCreate(entryHash, entryCount);
+
+	overrideTypesHash = true;
+	g_origLoadVehicleMeta(entry, notMapTypes, entryHash);
+	g_hashes.insert(entryHash);
+	overrideTypesHash = false;
+
+	// get the txdstore relationships, again
+	std::map<int, int> txdRelationshipsAfter;
+	GetTxdRelationships(txdRelationshipsAfter);
+
+	// find a difference
+	std::vector<std::pair<int, int>> newRelationships;
+	std::set_difference(txdRelationshipsAfter.begin(), txdRelationshipsAfter.end(), txdRelationships.begin(), txdRelationships.end(), std::back_inserter(newRelationships));
+
+	for (auto& relationship : newRelationships)
+	{
+		if (auto relIt = txdRelationships.find(relationship.first); relIt != txdRelationships.end())
+		{
+			g_undoTxdRelationships.emplace(entryHash, *relIt);
+		}
+		else
+		{
+			g_undoTxdRelationships.insert({ entryHash, { relationship.first, -1 } });
+		}
+	}
+}
+
+static void AddVehicleArchetype(fwArchetype* self, uint32_t typesHash)
+{
+	if (overrideTypesHash)
+	{
+		typesHash = 0xF000;
+	}
+
+	g_origAddArchetype(self, typesHash);
+}
+
+static void (*g_origUnloadVehicleMeta)(DataFileEntry* entry);
+
+static void UnloadVehicleMetaForDlc(DataFileEntry* entry)
+{
+	auto hash = HashString(entry->name);
+	g_origUnloadVehicleMeta(entry);
+
+	// unload TXD relationships
+	for (auto& relationship : fx::GetIteratorView(g_undoTxdRelationships.equal_range(hash)))
+	{
+		static auto module = streaming::Manager::GetInstance()->moduleMgr.GetStreamingModule("ytd");
+
+		atPoolBase* entryPool = (atPoolBase*)((char*)module + 56);
+		if (auto entry = entryPool->GetAt<char>(relationship.second.first); entry)
+		{
+			if (xbr::IsGameBuildOrGreater<1868>())
+			{
+				*(int32_t*)(entry + 16) = relationship.second.second;
+			}
+			else
+			{
+				*(uint16_t*)(entry + 16) = relationship.second.second;
+			}
+		}
+	}
+
+	g_undoTxdRelationships.erase(hash);
+
+	// unload vehicle models
+	rage__fwArchetypeManager__FreeArchetypes(hash);
+}
+
+static void (*g_origFreeArchetypes)(uint32_t idx);
+
+static void FreeArchetypesHook(uint32_t idx)
+{
+	if (idx == 0xF000)
+	{
+		for (uint32_t hash : g_hashes)
+		{
+			g_origFreeArchetypes(hash);
+		}
+
+		g_hashes.clear();
+	}
+
+	g_origFreeArchetypes(idx);
+}
+#endif
+
 static HookFunction hookFunction([]()
 {
 #ifdef GTA_FIVE
@@ -1952,6 +2213,31 @@ static HookFunction hookFunction([]()
 	}
 
 	g_interiorProxyArray = hook::get_address<decltype(g_interiorProxyArray)>(hook::get_pattern("83 FA FF 75 4D 48 8D 0D ? ? ? ? BA", 8));
+
+	// vehicle metadata removal could be per DLC
+	// therefore, replace 0xF000 with an actual hash of the filename
+	{
+		auto location = hook::get_pattern("41 B8 00 F0 00 00 33 D2 E8", 8);
+		hook::set_call(&g_origLoadVehicleMeta, location);
+		hook::call(location, LoadVehicleMetaForDlc);
+
+		location = hook::get_pattern("8B D5 48 8B CE 89 46 18 40 84 FF 74 0A", 0x17);
+		hook::set_call(&g_origAddArchetype, location);
+		hook::call(location, AddVehicleArchetype);
+	}
+
+	// unloading wrapper
+	{
+		MH_Initialize();
+
+		auto location = hook::get_pattern("49 89 43 18 49 8D 43 10 33 F6", -0x21);
+		MH_CreateHook(location, UnloadVehicleMetaForDlc, (void**)&g_origUnloadVehicleMeta);
+		MH_EnableHook(location);
+
+		location = hook::get_pattern("8B F9 8B DE 66 41 3B F0 73 33", -0x19);
+		MH_CreateHook(location, FreeArchetypesHook, (void**)&g_origFreeArchetypes);
+		MH_EnableHook(location);
+	}
 #endif
 
 	// process streamer-loaded resource: check 'free instantly' flag even if no dependencies exist (change jump target)
@@ -2120,6 +2406,7 @@ static HookFunction hookFunction([]()
 		auto typesStore = streaming::Manager::GetInstance()->moduleMgr.GetStreamingModule("ytyp");
 		auto navMeshStore = streaming::Manager::GetInstance()->moduleMgr.GetStreamingModule("ynv");
 		auto staticBoundsStore = streaming::Manager::GetInstance()->moduleMgr.GetStreamingModule("ybn");
+		auto str = streaming::Manager::GetInstance();
 
 		for (auto [module, idx] : g_pendingRemovals)
 		{
@@ -2138,11 +2425,20 @@ static HookFunction hookFunction([]()
 #endif
 			}
 
+			// if this is loaded by means of dependents, in Five we should remove the flags indicating this, or RemoveObject will fail and RemoveSlot will lead to inconsistent state
+			// in RDR3 this will have a special-case check in RemoveObject for dependents, but in case it fails we shall remove this still (otherwise RemoveSlot will corrupt)
+			//
+			// we don't do this for fwStaticBoundsStore since we don't call RemoveSlot for other reasons (will lead to odd state for interiors)
+			if (module != staticBoundsStore && str->Entries[idx + module->baseIdx].flags & 0xFFFC)
+			{
+				str->Entries[idx + module->baseIdx].flags &= ~0xFFFC;
+			}
+
 			// ClearRequiredFlag
-			streaming::Manager::GetInstance()->ReleaseObject(idx + module->baseIdx, 0xF1);
+			str->ReleaseObject(idx + module->baseIdx, 0xF1);
 
 			// RemoveObject
-			streaming::Manager::GetInstance()->ReleaseObject(idx + module->baseIdx);
+			str->ReleaseObject(idx + module->baseIdx);
 
 #ifdef GTA_FIVE
 			if (module == typesStore)
@@ -2179,7 +2475,7 @@ static HookFunction hookFunction([]()
 #endif
 		)
 		{
-			LoadStreamingFiles();
+			LoadStreamingFiles(LoadType::AfterSession);
 
 			g_reloadStreamingFiles = false;
 		}
@@ -2222,15 +2518,19 @@ static HookFunction hookFunction([]()
 		{
 			g_lockReload = false;
 
-			LoadStreamingFiles(true);
+			LoadStreamingFiles(LoadType::BeforeSession);
 		}
 	});
 
 	rage::OnInitFunctionEnd.Connect([](rage::InitFunctionType type)
 	{
-		if (type == rage::INIT_SESSION)
+		if (type == rage::INIT_BEFORE_MAP_LOADED)
 		{
-			LoadStreamingFiles();
+			LoadStreamingFiles(LoadType::BeforeMapLoad);
+		}
+		else if (type == rage::INIT_SESSION)
+		{
+			LoadStreamingFiles(LoadType::AfterSession);
 			LoadDataFiles();
 		}
 	});
@@ -2241,6 +2541,36 @@ static HookFunction hookFunction([]()
 #elif IS_RDR3
 	hook::jump(hook::get_pattern("4D 63 C1 81 E2 FF 03 00 00 48 C1 E8 0A 48 8B 84 C1 B0 05 00 00", -8), pgRawStreamer__GetEntryNameToBuffer);
 #endif
+
+
+	{
+		// mapdatastore/maptypesstore 'should async place'
+		
+		// typesstore
+		{
+#ifdef GTA_FIVE
+			auto vtbl = hook::get_address<void**>(hook::get_pattern("45 8D 41 1C 48 8B D9 C7 40 D8 00 01 00 00", 22));
+			hook::put(&vtbl[29], ret0);
+#elif IS_RDR3
+			auto vtbl = hook::get_address<void**>(hook::get_pattern("C7 40 D8 00 01 00 00 45 8D 41 49 E8", 19));
+			hook::put(&vtbl[34], ret0);
+#endif
+		}
+
+		// datastore
+		{
+#ifdef GTA_FIVE
+			auto vtbl = hook::get_address<void**>(hook::get_pattern("44 8D 46 0E C7 40 D8 C7 01 00 00 E8", 19));
+			hook::put(&vtbl[29], ret0);
+#elif IS_RDR3
+			auto vtbl = hook::get_address<void**>(hook::get_pattern("C7 40 D8 C7 01 00 00 44 8D 47 49 E8", 19));
+			hook::put(&vtbl[34], ret0);
+#endif
+		}
+
+		// raw #map/#typ loading
+		hook::nop(hook::get_pattern("D1 E8 A8 01 74 ? 48 8B 84", 4), 2);
+	}
 
 #ifdef GTA_FIVE
 	// replay dlc loading
