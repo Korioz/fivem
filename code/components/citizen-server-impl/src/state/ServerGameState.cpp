@@ -4538,6 +4538,37 @@ struct CStartProjectileEvent
     MSGPACK_DEFINE_MAP(ownerId, projectileHash, weaponHash, initialPositionX, initialPositionY, initialPositionZ, targetEntity, firePositionX, firePositionY, firePositionZ, effectGroup, unk3, commandFireSingleBullet, unk4, unk5, unk6, unk7, unkX8, unkY8, unkZ8, unk9, unk10, unk11, throwTaskSequence, unk12, unk13, unk14, unk15, unk16);
 };
 
+/*NETEV changeRadioStationEvent SERVER
+/#*
+ * Triggered when a vehicle radio station is changed.
+ *
+ * @param sender - The ID of the player that triggered the event.
+ * @param data - The event data.
+ #/
+declare function changeRadioStationEvent(sender: number, data: {
+	entityNetId: number,
+	radioIndex: number
+}): void;
+*/
+struct CChangeRadioStationEvent
+{
+	void Parse(rl::MessageBuffer& buffer)
+	{
+		entityNetId = buffer.Read<uint16_t>(13);
+		radioIndex = buffer.Read<uint16_t>(8);
+	}
+
+	inline std::string GetName()
+	{
+		return "changeRadioStationEvent";
+	}
+
+	uint16_t entityNetId;
+	int radioIndex;
+
+	MSGPACK_DEFINE_MAP(entityNetId, radioIndex);
+};
+
 template<typename TEvent>
 inline auto GetHandler(fx::ServerInstanceBase* instance, const fx::ClientSharedPtr& client, net::Buffer&& buffer) -> std::function<bool()>
 {
@@ -4661,6 +4692,8 @@ static std::function<bool()> GetEventHandler(fx::ServerInstanceBase* instance, c
 	bool isReply = buffer.Read<uint8_t>(); // is reply
 	uint16_t eventType = buffer.Read<uint16_t>(); // event ID
 
+	console::DPrintf("net", "GTA Event %i got invoked!\n", eventType);
+
 	switch(eventType)
 	{
 		case WEAPON_DAMAGE_EVENT: return GetHandler<CWeaponDamageEvent>(instance, client, std::move(buffer));
@@ -4672,6 +4705,7 @@ static std::function<bool()> GetEventHandler(fx::ServerInstanceBase* instance, c
 		case EXPLOSION_EVENT: return GetHandler<CExplosionEvent>(instance, client, std::move(buffer));
 		case START_PROJECTILE_EVENT: return GetHandler<CStartProjectileEvent>(instance, client, std::move(buffer));
 		case NETWORK_CLEAR_PED_TASKS_EVENT: return GetHandler<CClearPedTasksEvent>(instance, client, std::move(buffer));
+		case CHANGE_RADIO_STATION_EVENT: return GetHandler<CChangeRadioStationEvent>(instance, client, std::move(buffer));
 	};
 
 	return {};
