@@ -4711,7 +4711,7 @@ struct CNetworkPtFXEvent
  #/
 declare function changeRadioStationEvent(sender: number, data: {
 	entityNetId: number,
-	radioIndex: number
+	stationId: number
 }): void;
 */
 struct CChangeRadioStationEvent
@@ -4719,7 +4719,7 @@ struct CChangeRadioStationEvent
 	void Parse(rl::MessageBuffer& buffer)
 	{
 		entityNetId = buffer.Read<uint16_t>(13);
-		radioIndex = buffer.Read<uint16_t>(8);
+		stationId = buffer.Read<uint16_t>(8);
 	}
 
 	inline std::string GetName()
@@ -4728,9 +4728,9 @@ struct CChangeRadioStationEvent
 	}
 
 	uint16_t entityNetId;
-	int radioIndex;
+	int stationId;
 
-	MSGPACK_DEFINE_MAP(entityNetId, radioIndex);
+	MSGPACK_DEFINE_MAP(entityNetId, stationId);
 };
 
 template<typename TEvent>
