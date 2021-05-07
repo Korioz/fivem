@@ -16,6 +16,7 @@ if _OPTIONS['game'] == 'server' then
 	if os.istarget('windows') then
 		component 'citizen-server-gui'
 		component 'citizen-devtools'
+		component 'citizen-server-fxdk'
 	end
 	--[[if os.is('windows') then
 		component 'citizen-ssh-server'
@@ -65,9 +66,10 @@ else
 
 	if _OPTIONS['game'] ~= 'ny' then
 		component 'citizen-scripting-v8'
+		component 'citizen-scripting-v8next'
 	end
 
-	component 'n19ui'
+	--component 'n19ui'
 end
 
 component 'net-base'

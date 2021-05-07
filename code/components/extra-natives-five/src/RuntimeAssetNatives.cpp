@@ -38,6 +38,8 @@
 
 #include <atPool.h>
 
+#include <skyr/url.hpp>
+
 #include <concurrent_unordered_set.h>
 
 using Microsoft::WRL::ComPtr;
@@ -341,9 +343,9 @@ RuntimeTex* RuntimeTxd::CreateTextureFromImage(const char* name, const char* fil
 			}
 
 			// create a pixel data buffer
-			uint32_t* pixelData = new uint32_t[width * height];
+			std::unique_ptr<uint32_t[]> pixelData(new uint32_t[width * height]);
 
-			hr = source->CopyPixels(nullptr, width * 4, width * height * 4, reinterpret_cast<BYTE*>(pixelData));
+			hr = source->CopyPixels(nullptr, width * 4, width * height * 4, reinterpret_cast<BYTE*>(pixelData.get()));
 
 			if (SUCCEEDED(hr))
 			{
@@ -354,9 +356,9 @@ RuntimeTex* RuntimeTxd::CreateTextureFromImage(const char* name, const char* fil
 				reference.depth = 1;
 				reference.stride = width * 4;
 				reference.format = 11; // should correspond to DXGI_FORMAT_B8G8R8A8_UNORM
-				reference.pixelData = (uint8_t*)pixelData;
+				reference.pixelData = (uint8_t*)pixelData.get();
 
-				auto tex = std::make_shared<RuntimeTex>(rage::grcTextureFactory::getInstance()->createImage(&reference, nullptr), pixelData, width * height * 4);
+				auto tex = std::make_shared<RuntimeTex>(rage::grcTextureFactory::getInstance()->createImage(&reference, nullptr), pixelData.get(), width * height * 4);
 				m_txd->Add(name, tex->GetTexture());
 
 				m_textures[name] = tex;
@@ -1150,6 +1152,29 @@ static InitFunction initFunction([]()
 			throw std::runtime_error("no current script runtime");
 		}
 
+		// anonymize query string parameters in case these are used for anything malign
+		try
+		{
+			auto uri = skyr::make_url(sourceUrl);
+			
+			if (uri)
+			{
+				if (!uri->search().empty())
+				{
+					uri->set_search(fmt::sprintf("hash=%08x", HashString(uri->search().c_str())));
+					sourceUrl = uri->href();
+				}
+			}
+			else
+			{
+				throw std::runtime_error("invalid streaming URL");
+			}
+		}
+		catch (std::exception& e)
+		{
+			throw std::runtime_error(va("invalid streaming URL: %s", e.what()));
+		}
+
 		auto resource = reinterpret_cast<fx::Resource*>(runtime->GetParentObject());
 
 		auto headerList = std::make_shared<HttpHeaderList>();
@@ -1178,13 +1203,14 @@ static InitFunction initFunction([]()
 				if (it == headerList->end())
 				{
 					it = headerList->find("content-length");
-					length = atoi(it->second.c_str());
 
 					if (it == headerList->end())
 					{
 						trace("Invalid HTTP response from %s.\n", sourceUrl);
 						return;
 					}
+
+					length = atoi(it->second.c_str());
 				}
 				else
 				{

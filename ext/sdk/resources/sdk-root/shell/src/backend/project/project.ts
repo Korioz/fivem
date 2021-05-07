@@ -24,7 +24,7 @@ import {
   DeleteFileRequest,
   ProjectRenameDirectoryRequest,
   ProjectRenameFileRequest,
-  ProjectSetResourceConfigRequest,
+  ProjectSetAssetConfigRequest,
   DeleteDirectoryResponse,
   DeleteFileResponse,
   ProjectStartServerRequest,
@@ -35,29 +35,33 @@ import {
   ServerUpdateChannel,
   serverUpdateChannels,
 } from "shared/api.types";
-import { debounce, getResourceConfig, notNull } from 'shared/utils';
+import { debounce } from 'shared/utils';
 import { ContributionProvider } from 'backend/contribution-provider';
 import { AssetManagerContribution } from './asset/asset-manager-contribution';
-import { GameServerService, ServerStartRequest } from 'backend/game-server/game-server-service';
+import { GameServerService } from 'backend/game-server/game-server-service';
 import { FsJsonFileMapping, FsJsonFileMappingOptions } from 'backend/fs/fs-json-file-mapping';
 import { FsMapping } from 'backend/fs/fs-mapping';
-import { ChangeAwareContainer } from 'backend/change-aware-container';
 import { TaskReporterService } from 'backend/task/task-reporter-service';
 import { projectCreatingTaskName, projectLoadingTaskName } from 'shared/task.names';
 import { TheiaService } from 'backend/theia/theia-service';
 import { getAssetsPriorityQueue } from './project-utils';
-import { Resource } from './asset/asset-contributions/resource/resource';
-import { AssetImporterType, AssetMeta, assetMetaFileExt, AssetType } from 'shared/asset.types';
+import { AssetImporterType, AssetMeta, assetMetaFileExt } from 'shared/asset.types';
 import { AssetImporterContribution } from './asset/asset-importer-contribution';
-import { AssetInterface } from './asset/asset-types';
-import { ProjectData, ProjectManifest, ProjectManifestResource, ProjectPathsState, ProjectResources } from 'shared/project.types';
+import { AssetInterface } from '../../assets/core/asset-interface';
+import { ProjectAssetBaseConfig, ProjectData, ProjectManifest, ProjectPathsState } from 'shared/project.types';
 import { isAssetMetaFile, stripAssetMetaExt } from 'utils/project';
 import { ProjectUpgrade } from './project-upgrade';
-import { ProjectResourcesMaintainer } from './project-resources-maintainer';
+import { ServerResourceDescriptor, ServerStartRequest } from 'backend/game-server/game-server-runtime';
+import { ProjectAssets } from './project-assets';
+import { ProjectAssetManagers } from './project-asset-managers';
+import { disposableFromFunction, DisposableObject } from 'backend/disposable-container';
+import { WorldEditorService } from 'backend/world-editor/world-editor-service';
 
 interface Silentable {
   silent?: boolean,
 }
+
+export type AssetConfigChangedListener = <T extends ProjectAssetBaseConfig>(config: T) => void;
 
 export interface ManifestPropagationOptions extends Silentable {
 }
@@ -116,28 +120,35 @@ export class Project implements ApiContribution {
   @inject(ProjectUpgrade)
   protected readonly projectUpgrade: ProjectUpgrade;
 
+  @inject(ProjectAssets)
+  protected readonly assets: ProjectAssets;
+
+  @inject(ProjectAssetManagers)
+  protected readonly assetManagers: ProjectAssetManagers;
+
+  @inject(WorldEditorService)
+  protected readonly worldEditorService: WorldEditorService;
+
   @inject(FsMapping)
   public readonly fsMapping: FsMapping;
-
-  @inject(ProjectResourcesMaintainer)
-  protected readonly resourcesMaintainer: ProjectResourcesMaintainer;
 
   private state: ProjectState = ProjectState.Development;
 
   private path: string;
-  private assets: Map<string, AssetInterface> = new Map();
   private manifestMapping: FsJsonFileMapping<ProjectManifest>;
   private manifestPath: string;
   private storagePath: string;
   private fxserverCwd: string;
 
-  private readonly resources = new ChangeAwareContainer<ProjectResources>({}, (resources: ProjectResources) => {
-    if (this.ready) {
-      this.apiClient.emit(projectApi.resourcesUpdate, resources);
-    }
-  });
+  private assetConfigChangeListeners: Record<string, AssetConfigChangedListener> = Object.create(null);
 
-  private readonly resourceConfigChangeListeners: Record<string, Array<(cfg: ProjectManifestResource) => void>> = {};
+  onAssetConfigChanged(assetPath: string, listener: AssetConfigChangedListener): DisposableObject {
+    this.assetConfigChangeListeners[assetPath] = listener;
+
+    return disposableFromFunction(() => delete this.assetConfigChangeListeners[assetPath]);
+  }
+
+  private readonly resourceConfigChangeListeners: Record<string, Array<(cfg: ProjectAssetBaseConfig) => void>> = {};
 
   applyManifest(fn: (manifest: ProjectManifest) => void) {
     this.manifestMapping.apply(fn);
@@ -159,61 +170,56 @@ export class Project implements ApiContribution {
     return this.fsMapping.getMap();
   }
 
-  getResources(): ProjectResources {
-    return this.resources.get();
-  }
-  applyResourcesChange(cb: (draft: ProjectResources) => void) {
-    return this.resources.apply(cb);
-  }
-  onResourceConfigChange(resourceName: string, listener: (cfg: ProjectManifestResource) => void) {
-    (this.resourceConfigChangeListeners[resourceName] ??= []).push(listener);
-
-    return () => {
-      this.resourceConfigChangeListeners[resourceName] = this.resourceConfigChangeListeners[resourceName]
-        .filter((savedListener) => savedListener !== listener);
-    };
+  getAssets(): ProjectAssets {
+    return this.assets;
   }
 
   getProjectData(): ProjectData {
+    const assets = {};
+    const assetTypes = {};
+
+    for (const assetPath of this.getAssets().getAllPaths()) {
+      assets[assetPath] = this.getAssetConfig(assetPath);
+      assetTypes[assetPath] = this.assets.get(assetPath).type;
+    }
+
     return {
+      assets,
+      assetTypes,
+      fs: this.getFs(),
       path: this.getPath(),
       manifest: this.getManifest(),
-
-      fs: this.getFs(),
-      resources: this.getResources(),
     };
   }
 
-  getResourceConfig(resourceName: string): ProjectManifestResource {
-    return getResourceConfig(this.getManifest(), resourceName);
-  }
+  getEnabledAssets(): AssetInterface[] {
+    const enabledAssets: AssetInterface[] = [];
 
-  getEnabledResourcesPaths(): string[] {
-    return Object.values(this.getResources()).filter((resource) => resource.enabled).map((resource) => resource.path);
-  }
+    for (const [assetRelativePath, assetConfig] of Object.entries(this.getManifest().assets)) {
+      const assetPath = this.fsService.joinPath(this.path, assetRelativePath);
+      const asset = this.assets.get(assetPath);
 
-  getEnabledResourcesAssets(): Resource[] {
-    const enabledResourcesPaths = this.getEnabledResourcesPaths();
-
-    return enabledResourcesPaths.map((resourcePath) => {
-      const asset = this.assets.get(resourcePath);
-      if (asset instanceof Resource) {
-        return asset;
+      if (asset && assetConfig.enabled) {
+        enabledAssets.push(asset);
       }
+    }
 
-      return null;
-    }).filter(notNull);
+    return enabledAssets;
   }
 
   getFxserverCwd(): string {
     return this.fxserverCwd;
   }
 
-  hasAsset(assetPath: string): boolean {
-    return this.assets.has(assetPath);
+  getUpdateChannel(): ServerUpdateChannel {
+    return this.manifestMapping.get().serverUpdateChannel;
   }
 
-  isAsset<T extends new() => AssetInterface>(assetPath: string, ctor: T): boolean {
+  hasAsset(assetPath: string): boolean {
+    return !!this.assets.get(assetPath);
+  }
+
+  isAsset<T extends new () => AssetInterface>(assetPath: string, ctor: T): boolean {
     const asset = this.assets.get(assetPath);
 
     return asset && (asset instanceof ctor);
@@ -231,35 +237,17 @@ export class Project implements ApiContribution {
     return this.state !== ProjectState.Development;
   }
 
-  async suspendWatchCommands() {
-    const suspendPromises = [];
-
-    for (const asset of this.assets.values()) {
-      if (asset.suspendWatchCommands) {
-        suspendPromises.push(asset.suspendWatchCommands());
-      }
-    }
-
-    await Promise.all(suspendPromises);
-  }
-
-  resumeWatchCommands() {
-    for (const asset of this.assets.values()) {
-      asset.resumeWatchCommands?.();
-    }
-  }
-
   async runBuildCommands() {
-    const priorityQueue = getAssetsPriorityQueue(this.assets);
+    const priorityQueue = getAssetsPriorityQueue(this.assets.getAllPaths());
 
     for (const assetPathsBatch of priorityQueue) {
       await Promise.all(assetPathsBatch.map((assetPath) => {
         const asset = this.assets.get(assetPath);
-        if (!asset?.runBuildCommands) {
+        if (!asset?.build) {
           return;
         }
 
-        return asset.runBuildCommands();
+        return asset.build();
       }));
     }
   }
@@ -278,11 +266,11 @@ export class Project implements ApiContribution {
       const projectManifestPath = this.fsService.joinPath(this.path, fxdkProjectFilename);
       const projectManifest: ProjectManifest = {
         name: request.projectName,
-        serverUpdateChannel: serverUpdateChannels.recommended,
+        assets: {},
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        resources: {},
         pathsState: {},
+        serverUpdateChannel: serverUpdateChannels.recommended,
       };
 
       // This will create this.path as well
@@ -356,8 +344,8 @@ export class Project implements ApiContribution {
   private async initManifest() {
     const options: FsJsonFileMappingOptions<ProjectManifest> = {
       defaults: {
+        assets: {},
         pathsState: {},
-        resources: {},
         serverUpdateChannel: serverUpdateChannels.recommended,
       },
       onApply: () => this.notifyProjectUpdated(),
@@ -370,7 +358,7 @@ export class Project implements ApiContribution {
   private async initFs() {
     this.log('Initializing project fs...');
 
-    this.fsMapping.setShouldProcessUpdate((type, path) => path !== this.manifestPath);
+    this.fsMapping.setShouldProcessUpdate((path) => path !== this.manifestPath);
     this.fsMapping.setEntryMetaExtras({
       assetMeta: (entryPath: string) => this.getAssetMeta(entryPath, { silent: true }),
     });
@@ -381,14 +369,16 @@ export class Project implements ApiContribution {
       this.gcManifestResources();
 
       // Now notify related assets
-      for (const asset of this.findAssetsForPath(updatedPath)) {
-        asset.onFsUpdate(updateType, updatedEntry);
-      }
+      this.assets.fsUpdate(updateType, updatedPath, updatedEntry);
     });
 
-    this.fsMapping.setOnUnlink((entryPath) => this.releaseAsset(entryPath));
+    this.fsMapping.setOnDeleted((entryPath) => {
+      this.assets.release(entryPath);
+    });
 
-    this.fsMapping.setOnUnlinkDir((entryPath) => this.releaseAsset(entryPath));
+    this.fsMapping.setOnRenamed((entry, oldEntryPath) => {
+      this.assets.release(oldEntryPath);
+    });
 
     await this.fsMapping.init(this.path, this.storagePath);
   }
@@ -398,6 +388,7 @@ export class Project implements ApiContribution {
 
     this.apiClient.emit(projectApi.close);
 
+    await this.assets.dispose();
     await this.fsMapping.deinit();
     this.eventDisposers.forEach((disposer) => disposer());
 
@@ -427,7 +418,7 @@ export class Project implements ApiContribution {
       return this.fsMapping.forceEntryScan(assetPath);
     }
 
-    this.getAssetManagerContributions().forEach((manager) => manager.onFsEntry?.(entry));
+    this.assetManagers.fsEntry(entry);
 
     const existingAsset = this.assets.get(entry.path);
     if (existingAsset) {
@@ -436,45 +427,49 @@ export class Project implements ApiContribution {
       return;
     }
 
-    this.getAssetManagerContributions().forEach(async (contribution) => {
-      const asset = contribution.loadAsset(entry);
-      if (asset) {
-        this.assets.set(entry.path, asset);
-      }
-    });
+    this.assets.load(entry);
   }
 
   //#endregion lifecycle
 
-  async setResourcesEnabled(resourceNames: string[], enabled: boolean) {
+  async setAssetsEnabled(resourceNames: string[], enabled: boolean) {
     resourceNames.forEach((resourceName) => {
-      this.setResourceConfig({ resourceName, config: { enabled } });
+      this.setAssetConfig({ assetPath: resourceName, config: { enabled } });
     });
   }
 
+  getAssetConfig(assetPath: string): ProjectAssetBaseConfig {
+    const assetRelativePath = this.fsService.relativePath(this.path, assetPath);
+
+    return this.getManifest().assets[assetRelativePath] || { enabled: false };
+  }
+
   @handlesClientEvent(projectApi.setResourceConfig)
-  async setResourceConfig({ resourceName, config }: ProjectSetResourceConfigRequest) {
+  async setAssetConfig(request: ProjectSetAssetConfigRequest) {
+    const assetRelativePath = this.fsService.relativePath(this.path, request.assetPath);
+
     const newConfig = {
-      ...this.getResourceConfig(resourceName),
-      ...config,
+      ...this.getAssetConfig(request.assetPath),
+      ...request.config,
     };
 
     this.applyManifest((manifest) => {
-      manifest.resources[resourceName] = newConfig;
+      manifest.assets[assetRelativePath] = newConfig;
     });
 
-    if (this.getResources()[resourceName]) {
-      this.resources.apply((resources) => {
-        resources[resourceName] = {
-          ...resources[resourceName],
-          ...newConfig,
-        };
-      });
-    }
+    (this.resourceConfigChangeListeners[request.assetPath] || []).forEach((listener) => listener(newConfig));
 
-    (this.resourceConfigChangeListeners[resourceName] || []).forEach((listener) => listener(newConfig));
+    this.apiClient.emit(assetApi.setConfig, [request.assetPath, newConfig]);
 
     this.refreshEnabledResources();
+  }
+
+  deleteAssetConfig(assetPath: string) {
+    const assetRelativePath = this.fsService.relativePath(this.path, assetPath);
+
+    this.applyManifest((manifest) => {
+      delete manifest.assets[assetRelativePath];
+    });
   }
 
   @handlesClientEvent(projectApi.setPathsState)
@@ -554,29 +549,12 @@ export class Project implements ApiContribution {
     return !!(await this.fsService.statSafe(this.getAssetMetaPath(assetPath)));
   }
 
-  protected getAssetManagerContribution(assetType: AssetType): AssetManagerContribution {
-    try {
-      return this.assetManagerContributions.getTagged('assetType', assetType);
-    } catch (e) {
-      throw new Error(`No asset contribution of type ${assetType}`);
-    }
-  }
-
   protected getAssetImporterContribution(importerType: AssetImporterType): AssetImporterContribution {
     try {
       return this.assetImporterContributions.getTagged('importerType', importerType);
     } catch (e) {
       throw new Error(`No asset importer contribution of type ${importerType}`);
     }
-  }
-
-  private assetManagersContributionsCache: AssetManagerContribution[] | void = undefined;
-  protected getAssetManagerContributions(): AssetManagerContribution[] {
-    if (!this.assetManagersContributionsCache) {
-      this.assetManagersContributionsCache = this.assetManagerContributions.getAll();
-    }
-
-    return this.assetManagersContributionsCache as any;
   }
 
   @handlesClientEvent(assetApi.import)
@@ -590,7 +568,7 @@ export class Project implements ApiContribution {
   async createAsset(request: AssetCreateRequest) {
     this.log('Creating asset', request);
 
-    return this.getAssetManagerContribution(request.assetType).createAsset(request);
+    return this.assetManagers.get(request.assetType).createAsset(request);
   }
 
   @handlesClientEvent(assetApi.rename)
@@ -599,21 +577,20 @@ export class Project implements ApiContribution {
 
     // Applying changes to project manifest first
     const { newAssetName, assetPath } = request;
-    const oldAssetName = this.fsService.basename(request.assetPath);
+    const newAssetPath = this.fsService.joinPath(this.fsService.dirname(assetPath), newAssetName);
 
-    await this.releaseAsset(assetPath);
+    await this.assets.release(assetPath);
 
-    const resourceConfig = this.getManifest().resources[oldAssetName];
-    if (resourceConfig) {
-      this.applyManifest((manifest) => {
-        manifest.resources[newAssetName] = {
-          ...resourceConfig,
-          name: newAssetName,
-        };
+    const assetConfig = this.getAssetConfig(assetPath);
+    if (assetConfig) {
+      this.deleteAssetConfig(assetPath);
+
+      this.setAssetConfig({
+        assetPath: newAssetPath,
+        config: assetConfig,
       });
     }
 
-    const newAssetPath = this.fsService.joinPath(this.fsService.dirname(assetPath), newAssetName);
 
     const promises = [
       this.fsService.rename(assetPath, newAssetPath),
@@ -644,7 +621,7 @@ export class Project implements ApiContribution {
       return AssetDeleteResponse.Ok;
     }
 
-    await this.releaseAsset(assetPath);
+    await this.assets.release(assetPath);
 
     try {
       if (request.hardDelete) {
@@ -676,16 +653,6 @@ export class Project implements ApiContribution {
     }
   }
 
-  private async releaseAsset(assetPath: string) {
-    const asset = this.assets.get(assetPath);
-    if (!asset) {
-      return;
-    }
-
-    this.assets.delete(assetPath);
-    await asset.dispose?.();
-  }
-
   //#endregion assets
 
   //#region fs-methods
@@ -703,7 +670,7 @@ export class Project implements ApiContribution {
       return DeleteDirectoryResponse.Ok;
     }
 
-    await this.releaseAsset(directoryPath);
+    await this.assets.release(directoryPath);
 
     try {
       if (hardDelete) {
@@ -731,7 +698,7 @@ export class Project implements ApiContribution {
   async renameDirectory({ directoryPath, newDirectoryName }: ProjectRenameDirectoryRequest) {
     const newDirectoryPath = this.fsService.joinPath(this.fsService.dirname(directoryPath), newDirectoryName);
 
-    await this.releaseAsset(directoryPath);
+    await this.assets.release(directoryPath);
     await this.fsService.rename(directoryPath, newDirectoryPath);
   }
   // /Directory methods
@@ -750,7 +717,7 @@ export class Project implements ApiContribution {
       return DeleteFileResponse.Ok;
     }
 
-    await this.releaseAsset(filePath);
+    await this.assets.release(filePath);
 
     if (hardDelete) {
       await this.fsService.rimraf(filePath);
@@ -771,7 +738,7 @@ export class Project implements ApiContribution {
   async renameFile({ filePath, newFileName }: ProjectRenameFileRequest) {
     const newFilePath = this.fsService.joinPath(this.fsService.dirname(filePath), newFileName);
 
-    await this.releaseAsset(filePath);
+    await this.assets.release(filePath);
     await this.fsService.rename(filePath, newFilePath);
   }
   // /Files methods
@@ -787,7 +754,7 @@ export class Project implements ApiContribution {
       return;
     }
 
-    await this.releaseAsset(sourcePath);
+    await this.assets.release(sourcePath);
     await this.fsService.rename(sourcePath, newPath);
   }
 
@@ -816,13 +783,14 @@ export class Project implements ApiContribution {
   //#endregion fs-methods
 
   @handlesClientEvent(projectApi.startServer)
-  async startServer(request: ProjectStartServerRequest) {
+  async startServer(request: ProjectStartServerRequest = {}) {
     const serverStartRequest: ServerStartRequest = {
       fxserverCwd: this.fxserverCwd,
       updateChannel: this.manifestMapping.get().serverUpdateChannel,
       ...request,
     };
 
+    this.refreshEnabledResources();
     this.gameServerService.start(serverStartRequest);
   }
 
@@ -834,45 +802,33 @@ export class Project implements ApiContribution {
   private gcManifestResources = debounce(() => {
     this.log('Cleaning up manifest resources');
 
+    // FIXME: might be a good idea to call this only on load
     this.applyManifest((manifest) => {
-      const manifestResources = {};
+      for (const assetRelativePath of Object.keys(manifest.assets)) {
+        const assetPath = this.fsService.joinPath(this.path, assetRelativePath);
 
-      Object.values(this.getResources())
-        .forEach(({ name }) => {
-          manifestResources[name] = manifest.resources[name];
-        });
-
-      if (Object.keys(manifest.resources).length !== Object.keys(manifestResources).length) {
-        manifest.resources = manifestResources;
-
-        this.refreshEnabledResources();
-      }
-    });
-  }, 100);
-
-  private *findAssetsForPath(entryPath: string): IterableIterator<AssetInterface> {
-    for (const [assetPath, asset] of this.assets.entries()) {
-      if (entryPath.indexOf(assetPath) !== 0) {
-        continue;
-      }
-
-      // Distinguish /a/b/cc from /a/b/c assetPath for entryPath like /a/b/cc/test.txt
-      // as it effectively starts with /a/b/c as well as /a/b/cc but /a/b/c is wrong asset
-      // if paths lengths are equal - no need for additional check
-      if (assetPath.length !== entryPath.length) {
-        const nextChar = entryPath.charAt(assetPath.length);
-
-        // if entry's next char after matching asset path isn't path separator - wrong asset
-        if (nextChar !== '/' && nextChar !== '\\') {
-          continue;
+        if (!this.hasAsset(assetPath)) {
+          delete manifest.assets[assetRelativePath];
         }
       }
 
-      yield asset;
-    }
-  }
+      this.refreshEnabledResources();
+    });
+  }, 100);
 
   private refreshEnabledResources() {
-    this.resourcesMaintainer.refreshEnabledResources();
+    if (this.worldEditorService.isRunning()) {
+      return;
+    }
+
+    const resourceDescriptors: ServerResourceDescriptor[] = [];
+
+    for (const asset of this.getEnabledAssets()) {
+      if (asset.getResourceDescriptor) {
+        resourceDescriptors.push(asset.getResourceDescriptor());
+      }
+    }
+
+    this.gameServerService.setResources(resourceDescriptors);
   }
 }

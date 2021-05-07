@@ -19,6 +19,8 @@
 #include <ICoreGameInit.h>
 #include <GameInit.h>
 #include <ScriptEngine.h>
+#include <ResourceManager.h>
+#include <ResourceEventComponent.h>
 //New libs needed for saveSettings
 #include <fstream>
 #include <sstream>
@@ -331,7 +333,7 @@ static WRL::ComPtr<IShellLink> MakeShellLink(const ServerLink& link)
 
 		if (!link.rawIcon.empty())
 		{
-			auto iconPath = MakeRelativeCitPath(fmt::sprintf(L"cache/browser/%08x.ico", HashString(link.rawIcon.c_str())));
+			auto iconPath = MakeRelativeCitPath(fmt::sprintf(L"data/cache/browser/%08x.ico", HashString(link.rawIcon.c_str())));
 			
 			FILE* f = _wfopen(iconPath.c_str(), L"wb");
 
@@ -410,6 +412,17 @@ static void UpdateJumpList(const std::vector<ServerLink>& links)
 
 void DLL_IMPORT UiDone();
 
+static void UpdatePendingAuthPayload()
+{
+	if (!g_pendingAuthPayload.empty())
+	{
+		auto pendingAuthPayload = g_pendingAuthPayload;
+		g_pendingAuthPayload = "";
+
+		HandleAuthPayload(pendingAuthPayload);
+	}
+}
+
 static InitFunction initFunction([] ()
 {
 	static std::function<void()> g_onYesCallback;
@@ -448,21 +461,47 @@ static InitFunction initFunction([] ()
 			g_connected = false;
 		});
 
-		netLibrary->OnConnectionError.Connect([] (const char* error)
+		netLibrary->OnConnectionError.Connect([] (const char* errorStr)
 		{
+			std::string error(errorStr);
 #ifdef GTA_FIVE
-			if (strstr(error, "This server requires a different game build"))
+			if (strstr(error.c_str(), "This server requires a different game build"))
 			{
 				RestartGameToOtherBuild();
 			}
 #endif
+
+			if (strstr(error.c_str(), "steam") || strstr(error.c_str(), "Steam"))
+			{
+				if (auto steam = GetSteam())
+				{
+					if (steam->IsSteamRunning())
+					{
+						if (IClientEngine* steamClient = steam->GetPrivateClient())
+						{
+							InterfaceMapper steamUser(steamClient->GetIClientUser(steam->GetHSteamUser(), steam->GetHSteamPipe(), "CLIENTUSER_INTERFACE_VERSION001"));
+
+							if (steamUser.IsValid())
+							{
+								uint64_t steamID = 0;
+								steamUser.Invoke<void>("GetSteamID", &steamID);
+
+								if ((steamID & 0xFFFFFFFF00000000) != 0)
+								{
+									error += "\nThis is a Steam authentication failure, but you are running Steam and it is signed in. The server owner can find more information in their server console.";
+								}
+							}
+						}
+					}
+				}
+			}
 
 			console::Printf("no_console", "OnConnectionError: %s\n", error);
 
 			g_connected = false;
 
 			rapidjson::Document document;
-			document.SetString(error, document.GetAllocator());
+			document.SetString(error.c_str(), document.GetAllocator());
 
 			rapidjson::StringBuffer sbuffer;
 			rapidjson::Writer<rapidjson::StringBuffer> writer(sbuffer);
@@ -471,7 +510,7 @@ static InitFunction initFunction([] ()
 
 			nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "connectFailed", "message": %s })", sbuffer.GetString()));
 
-			ep.Call("connectionError", std::string(error));
+			ep.Call("connectionError", error);
 		});
 
 		netLibrary->OnConnectionProgress.Connect([] (const std::string& message, int progress, int totalProgress)
@@ -642,6 +681,14 @@ static InitFunction initFunction([] ()
 		{
 			ep.Call("sdk:consoleMessage", channel, std::string(msg));
 		});
+
+		ep.Bind("sdk:clientEvent", [](const std::string& eventName, const std::string& payload)
+		{
+			fwRefContainer<fx::ResourceManager> resman = Instance<fx::ResourceManager>::Get();
+			fwRefContainer<fx::ResourceEventManagerComponent> resevman = resman->GetComponent<fx::ResourceEventManagerComponent>();
+
+			resevman->QueueEvent2(eventName, {}, payload);
+		});
 	}
 
 	static ConsoleCommand connectCommand("connect", [](const std::string& server)
@@ -734,13 +781,13 @@ static InitFunction initFunction([] ()
 	curChannel = ToNarrow(resultPath);
 
 	static ConVar<bool> uiPremium("ui_premium", ConVar_None, false);
-	static ConVar<std::string> uiUpdateChannel("ui_updateChannel", ConVar_None, curChannel);
 
-	OnGameFrame.Connect([]()
+	static ConVar<std::string> uiUpdateChannel("ui_updateChannel", ConVar_None, curChannel,
+	[](internal::ConsoleVariableEntry<std::string>* convar)
 	{
-		if (uiUpdateChannel.GetValue() != curChannel)
+		if (convar->GetValue() != curChannel)
 		{
-			curChannel = uiUpdateChannel.GetValue();
+			curChannel = convar->GetValue();
 
 			WritePrivateProfileString(L"Game", L"UpdateChannel", ToWide(curChannel).c_str(), fpath.c_str());
 
@@ -766,7 +813,11 @@ static InitFunction initFunction([] ()
 
 	nui::OnInvokeNative.Connect([](const wchar_t* type, const wchar_t* arg)
 	{
-		if (!_wcsicmp(type, L"getMinModeInfo"))
+		if (!_wcsicmp(type, L"getFavorites"))
+		{
+			UpdatePendingAuthPayload();
+		}
+		else if (!_wcsicmp(type, L"getMinModeInfo"))
 		{
 #ifdef GTA_FIVE
 			static bool done = ([]
@@ -898,14 +949,7 @@ static InitFunction initFunction([] ()
 				netLibrary->SetPlayerName(newusername.c_str());
 			}
 
-			if (!g_pendingAuthPayload.empty())
-			{
-				auto pendingAuthPayload = g_pendingAuthPayload;
-
-				g_pendingAuthPayload = "";
-
-				HandleAuthPayload(pendingAuthPayload);
-			}
+			UpdatePendingAuthPayload();
 		}
 		else if (!_wcsicmp(type, L"exit"))
 		{
@@ -1064,6 +1108,7 @@ static InitFunction initFunction([] ()
 		ep.Call("disconnected");
 
 		nui::SetMainUI(true);
+		nui::SwitchContext("");
 
 		nui::CreateFrame("mpMenu", console::GetDefaultContext()->GetVariableManager()->FindEntryRaw("ui_url")->GetValue());
 	});
@@ -1600,9 +1645,8 @@ static InitFunction mediaRequestInit([]()
 					ImGui::Separator();
 					ImGui::Text("Press ^2F8^7 to accept/deny.");
 				}
-
-				ImGui::End();
 			}
+			ImGui::End();
 		}
 	});
 });

@@ -124,7 +124,7 @@ static InitFunction initFunction([] ()
 			if (GetFileAttributesW(MakeRelativeCitPath("citizen/ros/ros.crt").c_str()) == INVALID_FILE_ATTRIBUTES ||
 				GetFileAttributesW(MakeRelativeCitPath("citizen/ros/ros.key").c_str()) == INVALID_FILE_ATTRIBUTES)
 			{
-				_wunlink(MakeRelativeCitPath("caches.xml").c_str());
+				_wunlink(MakeRelativeCitPath("content_index.xml").c_str());
 			}
 
 			// create the TLS wrapper for the TLS backend
@@ -153,6 +153,8 @@ static InitFunction initFunction([] ()
 
 #ifndef IS_RDR3
 	if (initState->IsGameProcess() || wcsstr(GetCommandLineW(), L"ros:legit"))
+#else
+	if (!wcsstr(GetCommandLineW(), L"ros:epic") && !wcsstr(GetCommandLineW(), L"ros:steam"))
 #endif
 	{
 		net::PeerAddress address = net::PeerAddress::FromString("127.0.0.1:32891", 32891, net::PeerAddress::LookupType::NoResolution).get();

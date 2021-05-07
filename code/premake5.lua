@@ -131,7 +131,7 @@ workspace "CitizenMP"
 
 		-- allow one level of inlining
 		if os.istarget('windows') then
-			buildoptions '/Ob1'
+			buildoptions { '/Ob1', '/JMC-' }
 		end
 
 	-- release output
@@ -236,6 +236,12 @@ premake.override(premake.vstudio.vc2010, 'ignoreImportLibrary', function(base, c
 	if cfg.flags.NoImportLib then
 		premake.vstudio.vc2010.element("IgnoreImportLibrary", nil, "true")
 	end
+end)
+
+premake.override(premake.vstudio.vc2010, 'buildCommands', function(base, cfg, cond)
+	base(cfg, cond)
+
+	premake.vstudio.vc2010.element("BuildInParallel", cond, "true")
 end)
 
 premake.override(premake.vstudio.vc2010, 'importLanguageTargets', function(base, prj)

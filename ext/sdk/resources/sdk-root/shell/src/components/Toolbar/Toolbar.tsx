@@ -1,16 +1,18 @@
 import React from 'react';
-import { BsCardHeading, BsGear, BsList } from 'react-icons/bs';
+import { observer } from 'mobx-react-lite';
 import classnames from 'classnames';
-import { StateContext } from 'contexts/StateContext';
-import { ProjectContext } from 'contexts/ProjectContext';
-import { devtoolsIcon, newProjectIcon, openProjectIcon, projectBuildIcon } from 'constants/icons';
-import { ProjectCreator } from 'components/Project/ProjectCreator/ProjectCreator';
-import { ProjectOpener } from 'components/Project/ProjectOpener/ProjectOpener';
+import { BsCardHeading, BsGear, BsList } from 'react-icons/bs';
+import { devtoolsIcon, newProjectIcon, openProjectIcon, projectBuildIcon, mapIcon } from 'constants/icons';
 import { Project } from 'components/Project/Project';
 import { ContextMenu, ContextMenuItemsCollection, ContextMenuItemSeparator } from 'components/controls/ContextMenu/ContextMenu';
-import { TaskReporter } from 'components/TaskReporter/TaskReporter';
-import { ProjectToolbar } from 'components/Project/ProjectToolbar/ProjectToolbar';
+import { ProjectControls } from 'components/Project/ProjectControls/ProjectControls';
 import { ToolbarTrigger } from './ToolbarTrigger';
+import { Tour } from 'components/Tour/Tour';
+import { ToolbarState } from 'store/ToolbarState';
+import { ShellState } from 'store/ShellState';
+import { ProjectState } from 'store/ProjectState';
+import { ScrollContainer } from 'components/ScrollContainer/ScrollContainer';
+import { StatusBar } from './StatusBar/StatusBar';
 import s from './Toolbar.module.scss';
 
 const handleMenuClick = (openMenu) => openMenu();
@@ -19,23 +21,29 @@ const handleGetMenuCoords = () => ({
   left: 0,
 });
 
-export const Toolbar = React.memo(function Toolbar() {
-  const { toolbarWidth, toolbarOpen, openChangelog } = React.useContext(StateContext);
-  const { project, openCreator, openOpener, creatorOpen, openerOpen, openSettings, openBuilder } = React.useContext(ProjectContext);
+const useTour = () => {
+  const [tourVisible, setTourVisible] = React.useState(false);
 
-  const handleOpenCreator = React.useCallback(() => {
-    openCreator();
-  }, [openCreator]);
-  const handleOpenOpener = React.useCallback(() => {
-    openOpener();
-  }, [openOpener]);
+  React.useEffect(() => {
+    const firstLaunch = localStorage.getItem('firstLaunch');
 
-  const handleOpenSettings = React.useCallback(() => {
-    openSettings();
-  }, [openSettings]);
+    if (!firstLaunch && ProjectState.hasProject) {
+      setTourVisible(true);
+      localStorage.setItem('firstLaunch', 'false');
+    }
+  }, [ProjectState.hasProject]);
+
+  return {
+    tourVisible,
+    setTourVisible,
+  };
+};
+
+export const Toolbar = observer(function Toolbar() {
+  const { tourVisible, setTourVisible } = useTour();
 
   const toolbarClasses = classnames(s.root, {
-    [s.active]: toolbarOpen,
+    [s.active]: ToolbarState.isOpen,
   });
 
   const contextMenuItems: ContextMenuItemsCollection = React.useMemo((): ContextMenuItemsCollection => [
@@ -43,29 +51,29 @@ export const Toolbar = React.memo(function Toolbar() {
       id: 'open-project',
       text: 'Open Project',
       icon: openProjectIcon,
-      onClick: handleOpenOpener,
+      onClick: ProjectState.openOpener,
     },
     {
       id: 'new-project',
       text: 'New Project',
       icon: newProjectIcon,
-      onClick: handleOpenCreator,
+      onClick: ProjectState.openCreator,
     },
     ...(
-      project
+      ProjectState.hasProject
         ? [
           ContextMenuItemSeparator,
           {
             id: 'project-settings',
             text: 'Project settings',
             icon: <BsGear />,
-            onClick: handleOpenSettings,
+            onClick: ProjectState.openSettings,
           },
           {
             id: 'build-project',
             text: 'Build Project',
             icon: projectBuildIcon,
-            onClick: openBuilder,
+            onClick: ProjectState.openBuilder,
           },
         ] as ContextMenuItemsCollection
         : []
@@ -75,7 +83,7 @@ export const Toolbar = React.memo(function Toolbar() {
       id: 'changelog',
       text: 'Changelog',
       icon: <BsCardHeading />,
-      onClick: openChangelog,
+      onClick: ShellState.openChangelog,
     },
     {
       id: 'dev-tools',
@@ -83,22 +91,32 @@ export const Toolbar = React.memo(function Toolbar() {
       icon: devtoolsIcon,
       onClick: () => window.openDevTools(),
     },
-  ], [project, openBuilder]);
-
-  const projectTitle = project?.manifest.name || 'No project open yet';
+    ContextMenuItemSeparator,
+    {
+      id: 'tour',
+      text: 'Tour',
+      icon: mapIcon,
+      onClick: () => setTourVisible(true),
+    },
+  ], [ProjectState.hasProject]);
 
   const rootStyles: React.CSSProperties = {
-    '--toolbar-width': `${toolbarWidth}px`,
+    '--toolbar-width': `${ToolbarState.width}px`,
   } as any;
+
+  const projectToolbarClassName = classnames(s.pane, {
+    [s.active]: ShellState.isTheia,
+  });
 
   return (
     <div
       style={rootStyles}
       className={toolbarClasses}
+      title="Toolbar"
     >
       <ToolbarTrigger />
 
-      <div className={s.bar}>
+      <div className={s['tools-bar']}>
         <div className={s.controls}>
           <ContextMenu
             items={contextMenuItems}
@@ -110,23 +128,26 @@ export const Toolbar = React.memo(function Toolbar() {
             </button>
           </ContextMenu>
 
-          <div className={s['project-name']} title={projectTitle}>
+          <div className={s['project-name']} title={ProjectState.projectName}>
             <span>
-              {projectTitle}
+              {ProjectState.projectName}
             </span>
           </div>
 
-          {!!project && (
-            <ProjectToolbar />
+          {ProjectState.hasProject && ShellState.isTheia && (
+            <ProjectControls />
           )}
         </div>
 
-        {creatorOpen && <ProjectCreator />}
-        {openerOpen && <ProjectOpener />}
+        <div className={projectToolbarClassName} title="">
+          <ScrollContainer>
+            <Project />
+          </ScrollContainer>
+        </div>
 
-        <Project />
+        <StatusBar />
 
-        <TaskReporter />
+        <Tour tourVisible={tourVisible} setTourVisible={setTourVisible} />
       </div>
     </div>
   );

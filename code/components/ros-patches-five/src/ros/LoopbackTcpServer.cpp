@@ -1306,7 +1306,7 @@ static BOOL __stdcall EP_CreateProcessW(const wchar_t* applicationName, wchar_t*
 
 			BuildEnvironmentBlock(environmentMap, newEnvironment);
 
-			auto fxApplicationName = MakeCfxSubProcess(L"ROSService", fmt::sprintf(L"game_%d", xbr::GetGameBuild()));
+			auto fxApplicationName = MakeCfxSubProcess(L"ROSService", L"game_mtl");
 
 			// set the command line
 			const wchar_t* newCommandLine = va(L"\"%s\" ros:service", fxApplicationName, commandLine);
@@ -1440,12 +1440,12 @@ static void SetLauncherWaitCB(HANDLE hEvent, HANDLE hProcess, BOOL doBreak)
 							MoveFileW(MakeRelativeCitPath(fileName).c_str(), MakeRelativeCitPath(fileName + L".old" + backOffSuffix).c_str());
 						};
 
-						backOffFile(L"cache\\game\\ros_documents");
-						backOffFile(L"cache\\game\\ros_launcher_appdata3");
-						backOffFile(L"cache\\game\\ros_launcher_data3");
-						backOffFile(L"cache\\game\\ros_launcher_documents2");
-						backOffFile(L"cache\\game\\ros_launcher_game2");
-						backOffFile(L"cache\\game\\ros_profiles");
+						backOffFile(L"data\\game-storage\\ros_documents");
+						backOffFile(L"data\\game-storage\\ros_launcher_appdata3");
+						backOffFile(L"data\\game-storage\\ros_launcher_data3");
+						backOffFile(L"data\\game-storage\\ros_launcher_documents2");
+						backOffFile(L"data\\game-storage\\ros_launcher_game2");
+						backOffFile(L"data\\game-storage\\ros_profiles");
 
 						FatalError("Timed out while waiting for ROS/MTL to clear launch. Please check your system for third-party software (antivirus, etc.) that might be interfering with ROS.\nIf asking for support, please save and upload the log file from the 'Save information' button.\n\nAgain, please save and UPLOAD the log file from the 'Save information' button to https://forum.cfx.re/t/2009848 or anywhere you're asking for help!");
 					}
@@ -1518,7 +1518,7 @@ void RunLauncher(const wchar_t* toolName, bool instantWait)
 	//SetEnvironmentVariable(L"CitizenFX_ToolMode", L"1");
 
 	// create a new application name
-	auto fxApplicationName = MakeCfxSubProcess(L"ROSLauncher", fmt::sprintf(L"game_%d", xbr::GetGameBuild()));
+	auto fxApplicationName = MakeCfxSubProcess(L"ROSLauncher", L"game_mtl");
 
 	// set the command line
 	//const wchar_t* newCommandLine = va(L"\"%s\" %s --parent_pid=%d \"%s\"", fxApplicationName, toolName, GetCurrentProcessId(), MakeRelativeGamePath(L"GTAVLauncher.exe").c_str());
@@ -1668,7 +1668,7 @@ static HANDLE __stdcall CreateFileAStub(
 {
 	if (strcmp(lpFileName, PIPE_NAME_NARROW) == 0)
 	{
-		trace("^2Opening GTAVLauncher_Pipe, waiting for launcher to load...\n");
+		trace("^2Opening %s, waiting for launcher to load...\n", PIPE_NAME_NARROW);
 
 		lpFileName = va("%s%s", lpFileName, IsCL2() ? "_CL2" : "");
 
@@ -1676,7 +1676,7 @@ static HANDLE __stdcall CreateFileAStub(
 
 		trace("^2Launcher gave all-clear - waiting for pipe.\n");
 
-		WaitNamedPipeA(lpFileName, INFINITE);
+		WaitNamedPipeA(lpFileName, NMPWAIT_WAIT_FOREVER);
 
 		trace("^2Launcher is fine, continuing to initialize!\n");
 	}

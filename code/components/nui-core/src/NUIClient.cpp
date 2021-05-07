@@ -87,9 +87,12 @@ void NUIClient::OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> f
 	}
 }
 
+extern void TriggerLoadEnd(const std::string& name);
+
 void NUIClient::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode)
 {
 	auto url = frame->GetURL();
+	TriggerLoadEnd((url == "nui://game/ui/root.html") ? "__root" : frame->GetName());
 
 #ifndef USE_NUI_ROOTLESS
 	if (url == "nui://game/ui/root.html")
@@ -150,9 +153,6 @@ void NUIClient::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> fra
 		}
 	}
 #endif
-
-	// replace any segoe ui symbol font
-	frame->ExecuteJavaScript("[].concat.apply([], Array.from(document.styleSheets).map(a => Array.from(a.rules).filter(b => b.style && b.style.fontFamily))).forEach(a => a.style.fontFamily = a.style.fontFamily.replace(/Segoe UI Symbol/g, 'Segoe UI Emoji'));", "nui://patches", 0);
 }
 
 void NUIClient::OnAfterCreated(CefRefPtr<CefBrowser> browser)

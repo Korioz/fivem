@@ -9,6 +9,10 @@ local function isGamePersonality(name)
 		return isLauncherPersonality(name)
 	end
 
+	if name == 'game_mtl' then
+		return true
+	end
+
 	if name == 'game_1604' or name == 'game_2060' or name == 'game_372' or name == 'game_2189' then
 		return true
 	end
@@ -72,6 +76,13 @@ local function launcherpersonality(name)
 				if name == 'game_2189' then gameBuild = '2189_0' end
 				if name == 'game_2060' then gameBuild = '2060_2' end
 				if name == 'game_372' then gameBuild = '372' end
+
+				local gameDump = ("C:\\f\\GTA5_%s_dump.exe"):format(gameBuild)
+
+				if name == 'game_mtl' then
+					gameDump = "C:\\f\\Launcher.exe"
+					gameBuild = 'mtl'
+				end
 			
 				postbuildcommands {
 					("if not exist \"%%{cfg.buildtarget.directory}\\msobj140.dll\" ( copy /y \"%s\" \"%%{cfg.buildtarget.directory}\" )"):format(
@@ -80,24 +91,35 @@ local function launcherpersonality(name)
 					("if not exist \"%%{cfg.buildtarget.directory}\\mspdbcore.dll\" ( copy /y \"%s\" \"%%{cfg.buildtarget.directory}\" )"):format(
 						path.getabsolute('../../tools/dbg/bin/mspdbcore.dll'):gsub('/', '\\')
 					),
-					("if exist C:\\f\\GTA5_%s_dump.exe ( %%{cfg.buildtarget.directory}\\retarget_pe \"%%{cfg.buildtarget.abspath}\" C:\\f\\GTA5_%s_dump.exe )"):format(
-						gameBuild, gameBuild
+					("if exist %s ( %%{cfg.buildtarget.directory}\\retarget_pe \"%%{cfg.buildtarget.abspath}\" %s )"):format(
+						gameDump, gameDump
 					),
 					("if exist \"%s\" ( %%{cfg.buildtarget.directory}\\pe_debug \"%%{cfg.buildtarget.abspath}\" \"%s\" )"):format(
 						path.getabsolute(('../../tools/dbg/dump_%s.txt'):format(gameBuild)),
 						path.getabsolute(('../../tools/dbg/dump_%s.txt'):format(gameBuild))
 					)
 				}
+
+				resign()
 			elseif _OPTIONS['game'] == 'rdr3' then
 				local gameBuild = '1311'
 				
 				if name == 'game_1355' then gameBuild = '1355_18' end
+
+				local gameDump = ("C:\\f\\RDR2_%s.exe"):format(gameBuild)
+
+				if name == 'game_mtl' then
+					gameDump = "C:\\f\\Launcher.exe"
+					gameBuild = 'mtl'
+				end
 			
 				postbuildcommands {
-					("if exist C:\\f\\RDR2_%s.exe ( %%{cfg.buildtarget.directory}\\retarget_pe \"%%{cfg.buildtarget.abspath}\" C:\\f\\RDR2_%s.exe )"):format(
-						gameBuild, gameBuild
+					("if exist %s ( %%{cfg.buildtarget.directory}\\retarget_pe \"%%{cfg.buildtarget.abspath}\" %s )"):format(
+						gameDump, gameDump
 					),
 				}
+
+				resign()
 			end
 		end
 		
@@ -115,8 +137,10 @@ local function launcherpersonality(name)
 		add_dependencies { 'vendor:breakpad', 'vendor:tinyxml2', 'vendor:xz-crt', 'vendor:minizip-crt', 'vendor:tbb-crt', 'vendor:concurrentqueue', 'vendor:boost_locale-crt' }
 		
 		if isLauncherPersonality(name) then
-			add_dependencies { 'vendor:curl-crt', 'vendor:cpr-crt', 'vendor:mbedtls_crt', 'vendor:openssl_crypto_crt', 'vendor:hdiffpatch-crt' }
+			add_dependencies { 'vendor:curl-crt', 'vendor:cpr-crt', 'vendor:mbedtls_crt', 'vendor:hdiffpatch-crt' }
 		end
+
+		add_dependencies { 'vendor:openssl_crypto_crt' }
 		
 		--includedirs { "client/libcef/", "../vendor/breakpad/src/", "../vendor/tinyxml2/" }
 
@@ -171,9 +195,11 @@ if _OPTIONS['game'] == 'five' then
 	launcherpersonality 'game_372'
 	launcherpersonality 'game_2060'
 	launcherpersonality 'game_2189'
+	launcherpersonality 'game_mtl'
 elseif _OPTIONS['game'] == 'rdr3' then
 	launcherpersonality 'game_1311'
 	launcherpersonality 'game_1355'
+	launcherpersonality 'game_mtl'
 elseif _OPTIONS['game'] == 'ny' then
 	launcherpersonality 'game_43'
 end

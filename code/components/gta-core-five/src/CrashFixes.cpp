@@ -6,6 +6,8 @@
  */
 
 #include <StdInc.h>
+
+#include <jitasm.h>
 #include <Hooking.h>
 
 #include <Error.h>
@@ -1003,6 +1005,10 @@ static HookFunction hookFunction{[] ()
 	if (!xbr::IsGameBuildOrGreater<2060>())
 	{
 		hook::put<uint16_t>(hook::get_pattern("FF C8 0F 84 85 00 00 00 83 E8 12 75 6A", 13), 0x7EEB);
+	}
+	else
+	{
+		hook::put<uint16_t>(hook::get_pattern("83 E8 12 75 6A 48 8B 03 48 8B CB", 5), 0x76EB);
 	}
 
 	// vehicles.meta explosionInfo field invalidity

@@ -344,8 +344,6 @@ static InitFunction initFunction([] ()
 
 	mapper->AddGameService("matchmaking.asmx/Advertise", [] (const std::string& body)
 	{
-		trace("advertise: %s\n", body);
-
 		return "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ms=\"15.6263\" xmlns=\"AdvertiseResponse\"><Status>1</Status><MatchId>875fd057-fe8d-4145-a4e1-76b57a81817d</MatchId></Response>";
 	});
 
@@ -541,13 +539,20 @@ static InitFunction initFunction([] ()
 							h,
 							cpr::Body{ b.dump() });
 
-						trace("posted: %s\n", post.text);
+						if (!post.error && post.status_code < 400)
+						{
+							trace("posted: %s\n", post.text);
+
+							res->WriteHead(200);
+							res->End("OK!");
+							return;
+						}
 					}
 				}
 			}
 
-			res->WriteHead(200);
-			res->End("OK!");
+			res->WriteHead(400);
+			res->End("Failed to upload.");
 		});
 	}));
 

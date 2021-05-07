@@ -45,8 +45,6 @@ bool NUIApp::GetLocalizedString(int messageID, CefString& string)
 
 void NUIApp::OnContextInitialized()
 {
-	auto manager = CefCookieManager::GetGlobalManager(nullptr);
-	manager->SetSupportedSchemes({ "nui" }, true, nullptr);
 }
 
 void NUIApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
@@ -157,6 +155,9 @@ void NUIApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			"openDevTools",
 			"setFPSLimit",
 			"setInputChar",
+			"setWorldEditorControls",
+			"setWorldEditorMouse",
+			"sendGameClientEvent",
 			"fxdkSendApiMessage",
 			"fxdkOpenSelectFolderDialog",
 			"fxdkOpenSelectFileDialog",
@@ -185,7 +186,10 @@ void NUIApp::OnBeforeCommandLineProcessing(const CefString& process_type, CefRef
 {
 	static ConVar<bool> nuiUseInProcessGpu("nui_useInProcessGpu", ConVar_Archive, false);
 
-	if (nuiUseInProcessGpu.GetValue())
+	// weird dlls crash
+	bool hasWeirdStuff = (GetFileAttributes(MakeRelativeGamePath(L"d3d11.dll").c_str()) != INVALID_FILE_ATTRIBUTES);
+
+	if (nuiUseInProcessGpu.GetValue() && !hasWeirdStuff)
 	{
 		command_line->AppendSwitch("in-process-gpu");
 	}

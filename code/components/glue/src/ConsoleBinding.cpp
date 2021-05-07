@@ -48,16 +48,26 @@ static InitFunction initFunction([]()
 {
 	SetConsoleWriter(&g_writer);
 
-	OnGameFrame.Connect([]()
-	{
-		console::GetDefaultContext()->SaveConfigurationIfNeeded(fmt::sprintf("fxd:/%s%s.cfg", CONFIG_NAME, launch::IsSDKGuest() ? "_sdk" : ""));
-	});
-
 	static bool safeExec = false;
 
-	rage::fiDevice::OnInitialMount.Connect([]()
+	OnGameFrame.Connect([]()
+	{
+		if (safeExec)
+		{
+			console::GetDefaultContext()->SaveConfigurationIfNeeded(fmt::sprintf("fxd:/%s%s.cfg", CONFIG_NAME, launch::IsSDKGuest() ? "_sdk" : ""));
+		}
+	});
+
+	auto execRoot = []()
+	{
+		se::ScopedPrincipal seContext(se::Principal{ "system.console" });
+		console::GetDefaultContext()->ExecuteSingleCommandDirect(ProgramArguments{ "exec", fmt::sprintf("%s%s%s.cfg", (safeExec) ? "fxd:/" : "", CONFIG_NAME, launch::IsSDKGuest() ? "_sdk" : "") });
+	};
+
+	rage::fiDevice::OnInitialMount.Connect([execRoot]()
 	{
 		safeExec = true;
+		execRoot();
 	}, INT32_MAX);
 
 	static ConsoleCommand execCommand("exec", [=](const std::string& path)
@@ -100,7 +110,14 @@ static InitFunction initFunction([]()
 
 			fseek(f, 0, SEEK_END);
 
-			size_t len = ftell(f);
+			auto len = _ftelli64(f);
+
+			if (len < 0)
+			{
+				fclose(f);
+				return;
+			}
+
 			data.resize(len);
 
 			fseek(f, 0, SEEK_SET);
@@ -113,9 +130,16 @@ static InitFunction initFunction([]()
 		auto consoleCtx = console::GetDefaultContext();
 
 		consoleCtx->AddToBuffer(std::string(reinterpret_cast<char*>(&data[0]), data.size()));
-		consoleCtx->ExecuteBuffer();
+
+		try
+		{
+			consoleCtx->ExecuteBuffer();
+		}
+		catch (std::exception& e)
+		{
+			trace("initial console execution failed: %s\n");
+		}
 	});
 
-	se::ScopedPrincipal seContext(se::Principal{ "system.console" });
-	console::GetDefaultContext()->ExecuteSingleCommandDirect(ProgramArguments{ "exec", fmt::sprintf("%s%s.cfg", CONFIG_NAME, launch::IsSDKGuest() ? "_sdk" : "") });
+	execRoot();
 }, INT32_MIN);

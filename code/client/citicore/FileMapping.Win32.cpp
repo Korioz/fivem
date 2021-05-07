@@ -10,6 +10,7 @@
 #pragma comment(lib, "comctl32.lib")
 
 #ifndef IS_FXSERVER
+#include <jitasm.h>
 #include "Hooking.Aux.h"
 #include <minhook.h>
 
@@ -30,6 +31,7 @@ static NTSTATUS(NTAPI*g_origLoadDll)(const wchar_t*, uint32_t*, UNICODE_STRING*,
 
 static bool g_d3dx11;
 
+// this uses SHGetFolderPathW since SC SDK does as well
 static std::wstring GetRoot(int folder)
 {
 	wchar_t pathRef[MAX_PATH];
@@ -43,10 +45,17 @@ static std::wstring GetRoot(int folder)
 
 static std::wstring g_documentsRoot = GetRoot(CSIDL_MYDOCUMENTS);
 static std::wstring g_localAppDataRoot = GetRoot(CSIDL_LOCAL_APPDATA);
+static std::wstring g_programFilesRoot = GetRoot(CSIDL_PROGRAM_FILES);
+static std::wstring g_programFilesX86Root = GetRoot(CSIDL_PROGRAM_FILESX86);
+static std::wstring g_programDataRoot = GetRoot(CSIDL_COMMON_APPDATA);
 
 static std::wstring g_scDocumentsRoot = g_documentsRoot + L"\\Rockstar Games\\Social Club";
 static std::wstring g_launcherDocumentsRoot = g_documentsRoot + L"\\Rockstar Games\\Launcher";
 static std::wstring g_launcherAppDataRoot = g_localAppDataRoot + L"\\Rockstar Games\\Launcher";
+static std::wstring g_launcherProgramDataRoot = g_programDataRoot + L"\\Rockstar Games\\Launcher";
+static std::wstring g_scFilesRoot = g_programFilesRoot + L"\\Rockstar Games\\Social Club";
+static std::wstring g_scX86FilesRoot = g_programFilesX86Root + L"\\Rockstar Games\\Social Club";
+static std::wstring g_launcherFilesRoot = g_programFilesRoot + L"\\Rockstar Games\\Launcher";
 
 static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 {
@@ -54,12 +63,12 @@ static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 
 	if (wcsstr(origFileName, L"autosignin.dat") != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\autosignin.dat");
+		return MakeRelativeCitPath(L"data\\game-storage\\autosignin.dat");
 	}
 
 	if (wcsstr(origFileName, L"signintransfer.dat") != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\signintransfer.dat");
+		return MakeRelativeCitPath(L"data\\game-storage\\signintransfer.dat");
 	}
 
 	if ((wcsstr(origFileName, L"d3dx11_43.dll") != nullptr || wcsstr(origFileName, L"D3DX11_43")) && !g_d3dx11)
@@ -69,22 +78,22 @@ static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 
 	if (wcsstr(origFileName, L"Social Club\\Profiles") != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\ros_profiles") + &wcsstr(origFileName, L"Social Club\\Profiles")[20];
+		return MakeRelativeCitPath(L"data\\game-storage\\ros_profiles") + &wcsstr(origFileName, L"Social Club\\Profiles")[20];
 	}
 
 	if (wcsstr(origFileName, L"GTA V\\Profiles") != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\game_profiles") + &wcsstr(origFileName, L"GTA V\\Profiles")[14];
+		return MakeRelativeCitPath(L"data\\game-storage\\game_profiles") + &wcsstr(origFileName, L"GTA V\\Profiles")[14];
 	}
 
 	if (wcsstr(origFileName, L"Red Dead Redemption 2\\Profiles") != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\game_profiles") + &wcsstr(origFileName, L"ion 2\\Profiles")[14];
+		return MakeRelativeCitPath(L"data\\game-storage\\game_profiles") + &wcsstr(origFileName, L"ion 2\\Profiles")[14];
 	}
 
 	if (wcsstr(origFileName, L"version.txt") != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\version_orig.txt");
+		return MakeRelativeCitPath(L"data\\game-storage\\version_orig.txt");
 	}
 
 	if (wcsstr(origFileName, L"PlayGTAV.exe") != nullptr)
@@ -99,46 +108,48 @@ static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 
 	if (wcsstr(origFileName, L"NVIDIA Corporation\\NV_Cache") != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\") + &wcsstr(origFileName, L"NVIDIA Corporation\\NV_Cache")[19];
+		return MakeRelativeCitPath(L"data\\cache\\") + &wcsstr(origFileName, L"NVIDIA Corporation\\NV_Cache")[19];
 	}
 
-	if (wcsstr(origFileName, L"Files\\Rockstar Games\\Launcher") != nullptr)
+	// Program Files
+	if (wcsstr(origFileName, L"Files\\Rockstar Games\\Launcher") != nullptr || wcsstr(origFileName, g_launcherFilesRoot.c_str()) != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\launcher") + &wcsstr(origFileName, L"Games\\Launcher")[14];
+		return MakeRelativeCitPath(L"data\\game-storage\\launcher") + &wcsstr(origFileName, L"Games\\Launcher")[14];
 	}
 
-	if (wcsstr(origFileName, L"Data\\Rockstar Games\\Launcher") != nullptr)
+	// ProgramData
+	if (wcsstr(origFileName, L"Data\\Rockstar Games\\Launcher") != nullptr || wcsstr(origFileName, g_launcherProgramDataRoot.c_str()) != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\ros_launcher_data3") + &wcsstr(origFileName, L"Games\\Launcher")[14];
+		return MakeRelativeCitPath(L"data\\game-storage\\ros_launcher_data3") + &wcsstr(origFileName, L"Games\\Launcher")[14];
 	}
 
 	if (wcsstr(origFileName, L"Local\\Rockstar Games\\Launcher") != nullptr || wcsstr(origFileName, g_launcherAppDataRoot.c_str()) != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\ros_launcher_appdata3") + &wcsstr(origFileName, L"Games\\Launcher")[14];
+		return MakeRelativeCitPath(L"data\\game-storage\\ros_launcher_appdata3") + &wcsstr(origFileName, L"Games\\Launcher")[14];
 	}
 
 	if (wcsstr(origFileName, L"Documents\\Rockstar Games\\Social Club") != nullptr || wcsstr(origFileName, g_scDocumentsRoot.c_str()) != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\ros_documents2") + &wcsstr(origFileName, L"Games\\Social Club")[17];
+		return MakeRelativeCitPath(L"data\\game-storage\\ros_documents2") + &wcsstr(origFileName, L"Games\\Social Club")[17];
 	}
 
 	if (wcsstr(origFileName, L"Documents\\Rockstar Games\\Launcher") != nullptr || wcsstr(origFileName, g_launcherDocumentsRoot.c_str()) != nullptr)
 	{
-		return MakeRelativeCitPath(L"cache\\game\\ros_launcher_documents2") + &wcsstr(origFileName, L"Games\\Launcher")[14];
+		return MakeRelativeCitPath(L"data\\game-storage\\ros_launcher_documents2") + &wcsstr(origFileName, L"Games\\Launcher")[14];
 	}
 
 	if (getenv("CitizenFX_ToolMode"))
 	{
 		if (wcsstr(origFileName, L".lnk"))
 		{
-			return MakeRelativeCitPath(L"cache\\game\\dummy.lnk");
+			return MakeRelativeCitPath(L"data\\game-storage\\dummy.lnk");
 		}
 
-		auto gameDir = MakeRelativeCitPath(fmt::sprintf(L"cache\\game\\ros_launcher_game_%d", xbr::GetGameBuild()));
+		auto gameDir = MakeRelativeCitPath(fmt::sprintf(L"data\\game-storage\\ros_launcher_game_%d", xbr::GetGameBuild()));
 
 		if (wcsstr(origFileName, L".exe.part") != nullptr)
 		{
-			return MakeRelativeCitPath(L"cache\\game\\dummy.exe.part");
+			return MakeRelativeCitPath(L"data\\game-storage\\dummy.exe.part");
 		}
 
 		if (wcsstr(origFileName, L"Rockstar Games\\GTA5.exe") != nullptr ||
@@ -205,23 +216,27 @@ static std::wstring MapRedirectedNtFilename(const wchar_t* origFileName)
 
 static bool IsMappedFilename(const std::wstring& fileName)
 {
-	if (fileName.find(L"Files\\Rockstar Games\\Social Club") != std::string::npos)
+	if (fileName.find(L"Files\\Rockstar Games\\Social Club") != std::string::npos ||
+		fileName.find(g_scFilesRoot) != std::string::npos)
 	{
 		return true;
 	}
 
 	// hopefully this'll trap most `Program Files (x86)` directories
-	if (fileName.find(L"Files (x86)\\Rockstar Games\\Social Club") != std::string::npos)
+	if (fileName.find(L"Files (x86)\\Rockstar Games\\Social Club") != std::string::npos ||
+		fileName.find(g_scX86FilesRoot) != std::string::npos)
 	{
 		return true;
 	}
 
-	if (fileName.find(L"Files\\Rockstar Games\\Launcher") != std::string::npos)
+	if (fileName.find(L"Files\\Rockstar Games\\Launcher") != std::string::npos ||
+		fileName.find(g_launcherFilesRoot) != std::string::npos)
 	{
 		return true;
 	}
 
-	if (fileName.find(L"Data\\Rockstar Games\\Launcher") != std::string::npos)
+	if (fileName.find(L"Data\\Rockstar Games\\Launcher") != std::string::npos ||
+		fileName.find(g_launcherProgramDataRoot) != std::string::npos)
 	{
 		return true;
 	}
@@ -413,7 +428,7 @@ LONG WINAPI RegOpenKeyExWStub(HKEY key, const wchar_t* subKey, DWORD options, RE
 			RegSetKeyValue(HKEY_CURRENT_USER, L"SOFTWARE\\CitizenFX\\Social Club", name, REG_SZ, keyString, (wcslen(keyString) * 2) + 2);
 		};
 
-		setValue(L"InstallFolder", MakeRelativeCitPath(L"cache\\game\\ros_1241").c_str());
+		setValue(L"InstallFolder", MakeRelativeCitPath(L"data\\game-storage\\ros_1241").c_str());
 		setValue(L"InstallLang", L"1033");
 		setValue(L"Version", L"1.2.4.1");
 
