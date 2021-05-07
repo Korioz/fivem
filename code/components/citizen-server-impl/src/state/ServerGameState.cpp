@@ -713,7 +713,7 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 					// entity was requested as delete, nobody knows of it anymore: finalize
 					if (entity->deleting)
 					{
-						FinalizeClone({}, entity->handle, 0, "Requested deletion");
+						FinalizeClone({}, entity, entity->handle, 0, "Requested deletion");
 						continue;
 					}
 					// it's a client-owned entity, let's check for a few things
@@ -723,14 +723,14 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 						if (entity->firstOwnerDropped)
 						{
 							// we can delete
-							FinalizeClone({}, entity->handle, 0, "First owner dropped");
+							FinalizeClone({}, entity, entity->handle, 0, "First owner dropped");
 							continue;
 						}
 					}
 					// it's a script-less entity, we can collect it.
 					else if (!entity->IsOwnedByScript() && (entity->type != sync::NetObjEntityType::Player || !entity->GetClient()))
 					{
-						FinalizeClone({}, entity->handle, 0, "Regular entity GC");
+						FinalizeClone({}, entity, entity->handle, 0, "Regular entity GC");
 						continue;
 					}
 				}
@@ -843,6 +843,31 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 			{
 				if (playerEntity)
 				{
+					for (auto& playerPos : playerPosns)
+					{
+						float diffX = entityPos.x - playerPos.x;
+						float diffY = entityPos.y - playerPos.y;
+
+						float distSquared = (diffX * diffX) + (diffY * diffY);
+						if (distSquared < entity->GetDistanceCullingRadius(clientDataUnlocked->GetPlayerCullingRadius()))
+						{
+							isRelevant = true;
+							break;
+						}
+					}
+					
+					if (!isRelevant)
+					{
+						// are we owning the world grid in which this entity exists?
+						int sectorX = std::max(entityPos.x + 8192.0f, 0.0f) / 150;
+						int sectorY = std::max(entityPos.y + 8192.0f, 0.0f) / 150;
+
+						auto selfBucket = clientDataUnlocked->routingBucket;
+
+						std::shared_lock _(m_worldGridsMutex);
+						const auto& grid = m_worldGrids[selfBucket];
+
+						if (grid && sectorX >= 0 && sectorY >= 0 && sectorX < 256 && sectorY < 256)
 						{
 							if (grid->accel.netIDs[sectorX][sectorY] == netId)
 							{
@@ -1091,7 +1116,8 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 	// gather client refs
 	eastl::fixed_vector<fx::ClientSharedPtr, MAX_CLIENTS> clientRefs;
 
-	creg->ForAllClients([&clientRefs](const fx::ClientSharedPtr& clientRef)
+	// since we're doing essentially the same thing as what ForAllClients does, we use ForAllClientsLocked to prevent extra copies
+	creg->ForAllClientsLocked([&clientRefs](const fx::ClientSharedPtr& clientRef)
 	{
 		clientRefs.push_back(clientRef);
 	});
@@ -1866,6 +1892,7 @@ void ServerGameState::UpdateEntities()
 					if (curVehicleData && curVehicleData->occupants[vehicleData->curVehicleSeat] == 0)
 					{
 						curVehicleData->occupants[vehicleData->curVehicleSeat] = pedHandle;
+						curVehicleData->lastOccupant[vehicleData->curVehicleSeat] = pedHandle;
 
 						if (entity->type == sync::NetObjEntityType::Player)
 						{
@@ -2724,7 +2751,7 @@ void ServerGameState::RemoveClone(const fx::ClientSharedPtr& client, uint16_t ob
 	}
 }
 
-void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, uint16_t objectId, uint16_t uniqifier, std::string_view finalizeReason)
+void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, const fx::sync::SyncEntityPtr& entity, uint16_t objectId, uint16_t uniqifier, std::string_view finalizeReason)
 {
 	sync::SyncEntityPtr entityRef;
 
@@ -2733,7 +2760,7 @@ void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, uint16_t 
 		entityRef = m_entitiesById[objectId].lock();
 	}
 
-	if (entityRef)
+	if (entityRef && entityRef == entity)
 	{
 		if (!entityRef->finalizing)
 		{
@@ -2741,36 +2768,36 @@ void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, uint16_t 
 
 			GS_LOG("%s: finalizing object %d (for reason %s)\n", __func__, objectId, finalizeReason);
 
-			bool stolen = false;
-
-			{
-				std::unique_lock objectIdsLock(m_objectIdsMutex);
-				m_objectIdsUsed.reset(objectId);
-
-				if (m_objectIdsStolen.test(objectId))
-				{
-					stolen = true;
-
-					m_objectIdsSent.reset(objectId);
-					m_objectIdsStolen.reset(objectId);
-				}
-			}
-
-			if (stolen)
-			{
-				fx::ClientSharedPtr clientRef = entityRef->GetClient();
-				if (clientRef)
-				{
-					auto [lock, clientData] = GetClientData(this, clientRef);
-					clientData->objectIds.erase(objectId);
-				}
-			}
-
 			OnCloneRemove(entityRef, [this, objectId, entityRef]()
 			{
 				{
 					std::unique_lock entitiesByIdLock(m_entitiesByIdMutex);
 					m_entitiesById[objectId].reset();
+				}
+
+				bool stolen = false;
+
+				{
+					std::unique_lock objectIdsLock(m_objectIdsMutex);
+					m_objectIdsUsed.reset(objectId);
+
+					if (m_objectIdsStolen.test(objectId))
+					{
+						stolen = true;
+
+						m_objectIdsSent.reset(objectId);
+						m_objectIdsStolen.reset(objectId);
+					}
+				}
+
+				if (stolen)
+				{
+					fx::ClientSharedPtr clientRef = entityRef->GetClient();
+					if (clientRef)
+					{
+						auto [lock, clientData] = GetClientData(this, clientRef);
+						clientData->objectIds.erase(objectId);
+					}
 				}
 
 				{
@@ -4393,6 +4420,34 @@ struct CRemoveWeaponEvent
     MSGPACK_DEFINE_MAP(pedId, weaponType);
 };
 
+/*NETEV removeAllWeaponsEvent SERVER
+/#*
+ * Triggered when a player removes all weapons from a ped owned by another player.
+ *
+ * @param sender - The ID of the player that triggered the event.
+ * @param data - The event data.
+ #/
+declare function removeAllWeaponsEvent(sender: number, data: {
+	pedId: number
+}): void;
+*/
+struct CRemoveAllWeaponsEvent
+{
+	void Parse(rl::MessageBuffer& buffer)
+	{
+		pedId = buffer.Read<uint16_t>(13);
+	}
+
+	inline std::string GetName()
+	{
+		return "removeAllWeaponsEvent";
+	}
+
+	int pedId;
+
+	MSGPACK_DEFINE_MAP(pedId);
+};
+
 /*NETEV startProjectileEvent SERVER
 /#*
  * Triggered when a projectile is created.
@@ -4869,7 +4924,7 @@ static std::function<bool()> GetEventHandler(fx::ServerInstanceBase* instance, c
 	bool isReply = buffer.Read<uint8_t>(); // is reply
 	uint16_t eventType = buffer.Read<uint16_t>(); // event ID
 
-	if (Is2060() && eventType > 55) // patch `NETWORK_AUDIO_BARK_EVENT` added in 1868
+	if (Is2060() && eventType > 55) // patch for 1868+ game build as `NETWORK_AUDIO_BARK_EVENT` was added	
 	{
 		eventType--;
 	}
